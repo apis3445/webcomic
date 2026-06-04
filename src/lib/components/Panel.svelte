@@ -67,17 +67,37 @@
 			try {
 				const imgUrl = URL.createObjectURL(file);
 				await new Promise<void>((resolve) => {
+					let settled = false;
 					const img = new Image();
 					img.onload = () => {
-						width = img.naturalWidth || img.width;
-						height = img.naturalHeight || img.height;
-						URL.revokeObjectURL(imgUrl);
+						if (settled) return;
+						settled = true;
+						try {
+							width = img.naturalWidth || img.width || 0;
+							height = img.naturalHeight || img.height || 0;
+						} catch (err) {
+							console.warn('Failed reading image dimensions', err);
+						}
+						try {
+							URL.revokeObjectURL(imgUrl);
+						} catch {}
 						resolve();
 					};
-					img.onerror = (e) => {
-						URL.revokeObjectURL(imgUrl);
+					img.onerror = () => {
+						if (settled) return;
+						settled = true;
+						try {
+							URL.revokeObjectURL(imgUrl);
+						} catch {}
 						resolve();
 					};
+					// Safety timeout in case load never fires (HMR/teardown races)
+					const to = setTimeout(() => {
+						if (settled) return;
+						settled = true;
+						try { URL.revokeObjectURL(imgUrl); } catch {}
+						resolve();
+					}, 5000);
 					img.src = imgUrl;
 				});
 			} catch (e) {
