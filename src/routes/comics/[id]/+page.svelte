@@ -1,6 +1,7 @@
 <script lang="ts">
 /* eslint-disable @typescript-eslint/no-explicit-any */
 	import { onMount } from 'svelte';
+	import Navbar from '$lib/components/Navbar.svelte';
 	const { data } = $props();
 	const { comic, panels: orderedPanels, sheets } = data as { comic: any; panels: any[]; sheets?: any[] };
 
@@ -56,10 +57,6 @@
 	<title>{comic?.name ?? 'Comic'}</title>
 	<meta name="description" content={comic?.description ?? ''} />
 </svelte:head>
-
-<script lang="ts">
-	import Navbar from '$lib/components/Navbar.svelte';
-</script>
 
 <Navbar user={null} />
 
