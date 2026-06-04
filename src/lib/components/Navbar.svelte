@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import type { User } from '@supabase/supabase-js';
 	import { resolve } from '$app/paths';
 	import type { Attachment } from 'svelte/attachments';
@@ -390,46 +389,4 @@
 		}
 	}
 
-	/* Comics dropdown styles */
-	.comics-dropdown {
-		position: absolute;
-		top: calc(100% + 8px);
-		left: 0;
-		min-width: 220px;
-		background: #ffffff;
-		border: 2px solid #1a237e;
-		border-radius: 10px;
-		box-shadow: 6px 6px 0 #3f51b5;
-		padding: 0.4rem;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		z-index: 200;
-	}
-
-	.comics-menu {
-		position: relative;
-	}
-	.nav-button {
-		background: none;
-		border: none;
-		padding: 0.5rem 1rem;
-		cursor: pointer;
-	}
-	.comic-badge {
-		font-size: 0.7rem;
-		background: #e6f4ea;
-		color: #065f46;
-		padding: 2px 6px;
-		border-radius: 999px;
-		margin-left: 8px;
-	}
-	.comic-name {
-		margin-right: 8px;
-		display: inline-block;
-		max-width: 160px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
 </style>
