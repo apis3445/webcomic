@@ -31,17 +31,21 @@
 	}
 
 	// Helper to produce inline style for bubble overlay
-	function getBubbleStyle(b: any, imgEl: HTMLImageElement | undefined, storedWidth: number | undefined) {
+	function getBubbleStyle(b: any, imgEl: HTMLImageElement | undefined, storedWidth: number | undefined, storedHeight?: number | undefined) {
 		try {
 			if (!imgEl) return '';
 			const dispW = imgEl.clientWidth || imgEl.width || imgEl.naturalWidth || 1;
+			const dispH = imgEl.clientHeight || imgEl.height || imgEl.naturalHeight || 1;
 			const origW = storedWidth || imgEl.naturalWidth || dispW || 1;
-			const scale = dispW / origW;
-			const left = (b.x || 0) * scale;
-			const top = (b.y || 0) * scale;
-			const w = (b.w || b.width || 120) * scale;
-			const h = (b.h || b.height || 24) * scale;
-			return `transform: translate(${left}px, ${top}px); width: ${Math.max(40, w)}px; height: ${Math.max(18, h)}px;`;
+			const origH = storedHeight || imgEl.naturalHeight || dispH || 1;
+			const scaleX = dispW / origW;
+			const scaleY = dispH / origH;
+			const left = (b.x || 0) * scaleX;
+			const top = (b.y || 0) * scaleY;
+			const w = (b.w || b.width || 120) * scaleX;
+			const h = (b.h || b.height || 24) * scaleY;
+			// Use transform translate to position; set size so bubble wraps correctly
+			return `transform: translate(${Math.round(left)}px, ${Math.round(top)}px); width: ${Math.max(40, Math.round(w))}px; height: ${Math.max(18, Math.round(h))}px;`;
 		} catch (e) {
 			return '';
 		}
@@ -70,10 +74,10 @@
 						{#if item.bubbles?.length}
 							{#each item.bubbles as b (b.id)}
 								{#if typeof b.x === 'number' && typeof b.y === 'number'}
-									<!-- Position using inline transform; calculate scale from stored width if available -->
+									<!-- Position using inline transform; calculate scale from stored width/height if available -->
 									<div
 										class="bubble-overlay"
-										style={getBubbleStyle(b, item._imgEl, item.image?.width)}
+										style={getBubbleStyle(b, item._imgEl, item.image?.width, item.image?.height)}
 									>
 										<div class="bubble-inner">{b.text}</div>
 									</div>
@@ -84,9 +88,7 @@
 								{/if}
 							{/each}
 						{/if}
-					</div>
-				{:else}
-					<div class="placeholder">Image not available</div>
+					</div>	
 				{/if}
 			</div>
 		{/each}
