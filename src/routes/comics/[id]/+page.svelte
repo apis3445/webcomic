@@ -57,6 +57,12 @@
 	<meta name="description" content={comic?.description ?? ''} />
 </svelte:head>
 
+<script lang="ts">
+	import Navbar from '$lib/components/Navbar.svelte';
+</script>
+
+<Navbar user={null} />
+
 <main class="published-container">
 	<header class="published-header">
 		<h1>{comic?.name}</h1>
