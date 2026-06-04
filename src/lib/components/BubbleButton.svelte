@@ -198,6 +198,19 @@
 				/>
 			</svg>
 		{/if}
+
+		{#if type === 'burst'}
+			<!-- Burst / Explosion Bubble Preview -->
+			<svg viewBox="0 0 48 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+				<polygon
+					points="24,1 25.85,8.29 31.64,3.48 28.85,10.47 36.36,9.98 30,14 36.36,18.02 28.85,17.53 31.64,24.52 25.85,19.71 24,27 22.15,19.71 16.36,24.52 19.15,17.53 11.64,18.02 18,14 11.64,9.98 19.15,10.47 16.36,3.48 22.15,8.29"
+					fill="var(--preview-bg)"
+					stroke="currentColor"
+					stroke-width="1.75"
+					stroke-linejoin="miter"
+				/>
+			</svg>
+		{/if}
 	</div>
 	<span class="label-text">{label}</span>
 </button>

@@ -35,6 +35,8 @@
 		"vite": "^8.0.7"
 	},
 	"dependencies": {
+		"@supabase/ssr": "^0.10.3",
+		"@supabase/supabase-js": "^2.106.2",
 		"konva": "^10.3.0",
 		"svelte-konva": "^1.0.1"
 	}

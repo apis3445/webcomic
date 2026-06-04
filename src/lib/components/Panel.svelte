@@ -3,12 +3,16 @@
 	import { Stage, Layer, Image, Group, Text, Rect, Circle, Line, Path } from 'svelte-konva';
 	import type { KonvaEventObject } from 'konva/lib/Node';
 	import { comicState } from '../comicState.svelte';
+	import type { ComicStateType } from '../comicState.svelte';
+	// Server-backed upload flow: POST FormData to /api/upload-image and create comics via /api/comics
+	// (using event.locals.supabase on the server)
 
 	let { index, class: className = '' }: { index: number; class?: string } = $props();
 
 	let width = $state(0);
 	let height = $state(0);
 	let fileInput: HTMLInputElement | undefined;
+	let uploading = $state(false);
 
 	const panel = $derived(comicState.panels[index]);
 	const bgImage = $derived(panel.bgImage);
@@ -27,14 +31,82 @@
 		}
 	}
 
-	function handleFileSelect(e: Event) {
+	async function handleFileSelect(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (file && (file.type === 'image/jpeg' || file.type === 'image/png')) {
-			comicState.setPanelBgImage(index, URL.createObjectURL(file));
+			await uploadImageServer(file, index);
 		}
 		// Reset input so same file can be selected again
 		input.value = '';
+	}
+
+	async function uploadImageServer(file: File, panelIndex: number) {
+		uploading = true;
+		try {
+			// Ensure comic exists server-side
+			let comicId = (comicState as ComicStateType).comicId as string | null;
+			if (!comicId) {
+				const res = await fetch('/api/comics', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: 'Untitled', description: '' })
+				});
+				if (!res.ok) {
+					console.error('Failed to create comic');
+					return;
+				}
+				const body = await res.json();
+				comicId = body.id;
+				(comicState as ComicStateType).setComicId(comicId);
+			}
+
+			// Measure image dimensions in browser before upload so server stores width/height
+			let width = 0;
+			let height = 0;
+			try {
+				const imgUrl = URL.createObjectURL(file);
+				await new Promise<void>((resolve) => {
+					const img = new Image();
+					img.onload = () => {
+						width = img.naturalWidth || img.width;
+						height = img.naturalHeight || img.height;
+						URL.revokeObjectURL(imgUrl);
+						resolve();
+					};
+					img.onerror = (e) => {
+						URL.revokeObjectURL(imgUrl);
+						resolve();
+					};
+					img.src = imgUrl;
+				});
+			} catch (e) {
+				console.error('Error measuring image dimensions', e);
+			}
+
+			const form = new FormData();
+			form.append('file', file);
+			form.append('panelIndex', String(panelIndex + 1));
+			form.append('sheetNumber', '1');
+			// comicId is guaranteed to be set above; assert non-null to satisfy TypeScript
+			form.append('comicId', comicId!);
+			if (width > 0) form.append('width', String(width));
+			if (height > 0) form.append('height', String(height));
+
+			const uploadRes = await fetch('/api/upload-image', { method: 'POST', body: form });
+			if (!uploadRes.ok) {
+				console.error('Upload failed');
+				return;
+			}
+			const data = await uploadRes.json();
+			if (data.url) {
+				comicState.setPanelBgImage(panelIndex, data.url);
+			}
+		} catch (err) {
+			console.error('uploadImageServer error', err);
+		} finally {
+			uploading = false;
+		}
 	}
 
 	function openFilePicker(e?: Event) {
@@ -45,9 +117,7 @@
 	function handleStageClick(e: KonvaEventObject<MouseEvent>) {
 		e.evt.stopPropagation();
 		comicState.selectPanel(index);
-		if (!bgImage) {
-			openFilePicker();
-		}
+		openFilePicker();
 	}
 
 	const bgScale = $derived.by(() => {
@@ -70,6 +140,7 @@
 	}
 
 	function onBubbleClick(e: KonvaEventObject<MouseEvent>, bubbleId: number) {
+		e.cancelBubble = true;
 		e.evt.stopPropagation();
 		comicState.selectPanel(index);
 		comicState.selectBubble(bubbleId);
@@ -124,6 +195,25 @@
 			// Caption style flat box
 			return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;
 		}
+		if (type === 'burst') {
+			const cx = w / 2;
+			const cy = h / 2;
+			const outerRx = (w / 2) * 0.95;
+			const outerRy = (h / 2) * 0.95;
+			const innerRx = outerRx * 0.55;
+			const innerRy = outerRy * 0.55;
+			const numPoints = 12;
+			const parts: string[] = [];
+			for (let i = 0; i < numPoints * 2; i++) {
+				const angle = (i * Math.PI) / numPoints - Math.PI / 2;
+				const rx = i % 2 === 0 ? outerRx : innerRx;
+				const ry = i % 2 === 0 ? outerRy : innerRy;
+				const x = cx + rx * Math.cos(angle);
+				const y = cy + ry * Math.sin(angle);
+				parts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+			}
+			return parts.join(' ') + ' Z';
+		}
 		return '';
 	}
 </script>
@@ -134,8 +224,6 @@
 	role="region"
 	aria-label="Comic panel {index + 1}"
 	{@attach observeSize}
-	ondragover={dragOver}
-	ondrop={drop}
 >
 	<input
 		bind:this={fileInput}
@@ -170,7 +258,13 @@
 					</div>
 				</div>
 			{/if}
-			<div class="stage-canvas-wrapper">
+			<div
+				class="stage-canvas-wrapper"
+				role="region"
+				aria-label={'Comic panel drop area for panel ' + (index + 1)}
+				ondragover={dragOver}
+				ondrop={drop}
+			>
 				<Stage {width} {height} onclick={handleStageClick}>
 					<Layer>
 						{#if bgImage}
@@ -276,7 +370,7 @@
 									verticalAlign="middle"
 									width={bubble.width}
 									height={bubble.height}
-									padding={10}
+									padding={6}
 									fill="#000000"
 								/>
 
@@ -286,6 +380,7 @@
 										x={bubble.width}
 										y={0}
 										onclick={(e) => {
+											e.cancelBubble = true;
 											e.evt.stopPropagation();
 											comicState.deleteBubble(bubble.id);
 										}}
@@ -300,6 +395,25 @@
 					</Layer>
 				</Stage>
 			</div>
+
+			{#if uploading}
+				<div class="uploading-overlay" aria-hidden="true">
+					<div class="uploading-inner">
+						<svg class="spinner" viewBox="0 0 50 50" aria-hidden="true">
+							<circle
+								cx="25"
+								cy="25"
+								r="20"
+								fill="none"
+								stroke-width="5"
+								stroke="#ffffff"
+								stroke-opacity="0.95"
+							></circle>
+						</svg>
+						<div class="uploading-text">Uploading…</div>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -369,5 +483,64 @@
 		position: absolute;
 		inset: 0;
 		z-index: 1;
+	}
+
+	/* Small upload button overlay (visible and keyboard accessible) */
+	.upload-button {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		z-index: 3;
+		background: rgba(0, 0, 0, 0.6);
+		color: #fff;
+		border: none;
+		padding: 6px 10px;
+		border-radius: 6px;
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.upload-button:focus {
+		outline: 2px solid #fff;
+		outline-offset: 2px;
+	}
+
+	/* Uploading overlay */
+	.uploading-overlay {
+		position: absolute;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.45);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 6;
+	}
+	.uploading-inner {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
+		color: #fff;
+	}
+	.spinner {
+		width: 44px;
+		height: 44px;
+		animation: spin 1s linear infinite;
+	}
+	.spinner circle {
+		stroke-dasharray: 126;
+		stroke-dashoffset: 31.5;
+		stroke-linecap: round;
+		stroke: #fff;
+	}
+	.uploading-text {
+		margin-top: 6px;
+		font-weight: 700;
+		color: #fff;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>
