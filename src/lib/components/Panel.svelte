@@ -65,41 +65,51 @@
 			let width = 0;
 			let height = 0;
 			try {
-				const imgUrl = URL.createObjectURL(file);
-				await new Promise<void>((resolve) => {
-					let settled = false;
-					const img = new Image();
-					img.onload = () => {
-						if (settled) return;
-						settled = true;
-						try {
-							width = img.naturalWidth || img.width || 0;
-							height = img.naturalHeight || img.height || 0;
-						} catch (err) {
-							console.warn('Failed reading image dimensions', err);
-						}
-						try {
-							URL.revokeObjectURL(imgUrl);
-						} catch {}
-						resolve();
-					};
-					img.onerror = () => {
-						if (settled) return;
-						settled = true;
-						try {
-							URL.revokeObjectURL(imgUrl);
-						} catch {}
-						resolve();
-					};
-					// Safety timeout in case load never fires (HMR/teardown races)
-					const to = setTimeout(() => {
-						if (settled) return;
-						settled = true;
-						try { URL.revokeObjectURL(imgUrl); } catch {}
-						resolve();
-					}, 5000);
-					img.src = imgUrl;
-				});
+				// Prefer createImageBitmap when available — it's more robust during HMR/teardown
+				if (typeof createImageBitmap === 'function') {
+					try {
+						const bmp = await createImageBitmap(file as Blob);
+						width = (bmp as any).width || 0;
+						height = (bmp as any).height || 0;
+						if (typeof (bmp as any).close === 'function') (bmp as any).close();
+					} catch (err) {
+						// fallback to Image approach below
+						console.warn('createImageBitmap failed, falling back to Image:', err);
+						// continue to Image fallback
+						const imgUrl = URL.createObjectURL(file);
+						await new Promise<void>((resolve) => {
+							let settled = false;
+							const img = new Image();
+							img.onload = () => {
+								if (settled) return;
+								settled = true;
+								try { width = img.naturalWidth || img.width || 0; height = img.naturalHeight || img.height || 0; } catch (e) {}
+								try { URL.revokeObjectURL(imgUrl); } catch {}
+								resolve();
+							};
+							img.onerror = () => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); };
+							const to = setTimeout(() => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); }, 5000);
+							img.src = imgUrl;
+						});
+					}
+				} else {
+					// Fallback: use Image load
+					const imgUrl = URL.createObjectURL(file);
+					await new Promise<void>((resolve) => {
+						let settled = false;
+						const img = new Image();
+						img.onload = () => {
+							if (settled) return;
+							settled = true;
+							try { width = img.naturalWidth || img.width || 0; height = img.naturalHeight || img.height || 0; } catch (e) {}
+							try { URL.revokeObjectURL(imgUrl); } catch {}
+							resolve();
+						};
+						img.onerror = () => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); };
+						const to = setTimeout(() => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); }, 5000);
+						img.src = imgUrl;
+					});
+				}
 			} catch (e) {
 				console.error('Error measuring image dimensions', e);
 			}
