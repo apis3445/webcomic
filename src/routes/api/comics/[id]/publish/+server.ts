@@ -23,15 +23,30 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
 
 	// Accept optional payload with template and panels/bubbles to persist before publishing
-	let payload: any = null;
-	try {
-		payload = await request.json();
-	} catch (e) {
-		payload = null;
-	}
+	const payload: any = await request.json().catch(() => null);
 
 	if (payload && (payload.templateId || payload.panels)) {
 		try {
+			const isUuid = (s: any) =>
+				typeof s === 'string' &&
+				/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
+			let safeTemplateIdPub: string | null = null;
+			if (typeof payload.templateId === 'string') {
+				if (isUuid(payload.templateId)) {
+					safeTemplateIdPub = payload.templateId;
+				} else {
+					const { data: tmpl } = await locals.supabase
+						.from('sheet_templates')
+						.select('id')
+						.eq('slug', payload.templateId)
+						.maybeSingle();
+					if (tmpl && (tmpl as any).id) safeTemplateIdPub = (tmpl as any).id;
+					else if (payload.templateId)
+						console.warn(`publish: could not resolve template slug "${payload.templateId}"`);
+				}
+			}
+
 			// Ensure sheet #1 exists
 			let { data: sheetRow } = await locals.supabase
 				.from('sheets')
@@ -42,34 +57,42 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 			if (!sheetRow) {
 				const { data: newSheet } = await locals.supabase
 					.from('sheets')
-					.insert({ comic_id: comicId, number: 1, template_id: payload.templateId ?? null })
+					.insert({
+						comic_id: comicId,
+						number: 1,
+						template_id: safeTemplateIdPub
+					})
 					.select('id')
 					.single();
 				sheetRow = newSheet;
-			} else if (payload.templateId) {
-				// update template_id
+			} else if (payload.templateId && safeTemplateIdPub) {
+				// Only update when slug resolved; otherwise we'd wipe the existing template.
+				if (!(sheetRow as any).id) {
+					return new Response(JSON.stringify({ error: 'Invalid sheet record' }), { status: 500 });
+				}
 				await locals.supabase
 					.from('sheets')
-					.update({ template_id: payload.templateId })
+					.update({ template_id: safeTemplateIdPub })
 					.eq('id', sheetRow.id);
 			}
 
-			const sheetId = sheetRow.id;
+			const sheetId = sheetRow?.id;
 
 			// Upsert panels and bubbles (simple approach: find panel by sheet_id + index)
 			if (Array.isArray(payload.panels)) {
 				for (const p of payload.panels) {
 					const idx = p.index;
-					// find existing panel
-					const { data: existingPanel } = await locals.supabase
+					// Pick the oldest existing panel for this (sheet, index). Tolerates legacy
+					// duplicates created by older upload-image runs without erroring.
+					const { data: existingPanels } = await locals.supabase
 						.from('panels')
-						.select('id')
+						.select('id, created_at')
 						.eq('sheet_id', sheetId)
 						.eq('index', idx)
-						.maybeSingle();
+						.order('created_at', { ascending: true });
 					let panelId: string;
-					if (existingPanel && (existingPanel as any).id) {
-						panelId = (existingPanel as any).id;
+					if (existingPanels && existingPanels.length > 0) {
+						panelId = (existingPanels[0] as any).id;
 						// update geometry if provided
 						const geom: any = {};
 						if (typeof p.x === 'number') geom.x = p.x;
@@ -108,7 +131,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							w: b.width ?? b.w,
 							h: b.height ?? b.h,
 							z_index: b.z_index ?? 0,
-							style: b.style ?? null
+							style: b.type ?? b.style ?? null
 						}));
 						await locals.supabase.from('bubbles').insert(toInsert);
 					}

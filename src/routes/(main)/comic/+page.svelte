@@ -2,51 +2,175 @@
 	import '../../../app.css';
 	import Panel from '$lib/components/Panel.svelte';
 	import BubbleButton from '$lib/components/BubbleButton.svelte';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import {
 		comicState,
 		type BubbleType,
 		type TemplateId,
-		type ComicStateType
+		type PanelState
 	} from '$lib/comicState.svelte';
+	import type { PageData } from './$types';
+
+	const { data }: { data: PageData } = $props();
 
 	let step = $state<'select' | 'edit'>('select');
 	let bubbleText = $state('');
 	let printImageUrls = $state<string[]>([]);
-	let newComicName =  $state('');
+	let newComicName = $state('');
+	let thumbnailFile = $state<File | null>(null);
+	let thumbnailPreviewUrl = $state<string | null>(null);
+	let creatingComic = $state(false);
 
-	type PublishResult = { id?: string; public_url?: string; error?: string };
+	// URL is the source of truth: ?id=X loads the comic into editor; no id => new-comic picker.
+	$effect(() => {
+		if (data.comic) {
+			if (comicState.comicId !== data.comic.id) {
+				suppressNextAutosave = true;
+				comicState.hydrate(data.comic);
+			}
+			step = 'edit';
+		} else {
+			suppressNextAutosave = true;
+			comicState.reset();
+			lastSavedSnapshot = '';
+			saveStatus = 'idle';
+			step = 'select';
+		}
+	});
 
 	let publishLoading = $state(false);
 	let publishError = $state<string | null>(null);
-	let publishResults = $state<PublishResult[]>([]);
 	let publishModalOpen = $state(false);
 	let publishStep = $state('');
-	let publishDetails = $state<PublishResult[]>([]);
 	let comicPublicUrl = $state<string | null>(null);
+	let urlCopied = $state(false);
+
+	// ── Save / autosave state ───────────────────────────────────────────────
+	let saveStatus = $state<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
+	let saveError = $state<string | null>(null);
+	let lastSavedSnapshot = '';
+	let saveTimer: ReturnType<typeof setTimeout> | null = null;
+	let suppressNextAutosave = false;
+	const AUTOSAVE_DEBOUNCE_MS = 1500;
+
+	function buildSnapshot(): string {
+		return JSON.stringify({
+			title: comicState.title,
+			templateId: comicState.templateId,
+			panels: comicState.panels.map((p: PanelState) => ({
+				stageW: p.stageW,
+				stageH: p.stageH,
+				bubbles: p.bubbles.map((b) => ({
+					x: b.x,
+					y: b.y,
+					width: b.width,
+					height: b.height,
+					text: b.text,
+					type: b.type
+				}))
+			}))
+		});
+	}
+
+	async function saveNow() {
+		const cid = comicState.comicId;
+		if (!cid) return;
+		if (saveTimer) {
+			clearTimeout(saveTimer);
+			saveTimer = null;
+		}
+		const snapshotAtStart = buildSnapshot();
+		saveStatus = 'saving';
+		saveError = null;
+		try {
+			const payload = {
+				name: comicState.title,
+				templateId: comicState.templateId,
+				panels: comicState.panels.map((p: PanelState, idx: number) => ({
+					index: idx + 1,
+					w: p.stageW || undefined,
+					h: p.stageH || undefined,
+					bubbles: p.bubbles
+				}))
+			};
+			const res = await fetch(`/api/comics/${cid}/save`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			if (!res.ok) {
+				const body = await res.json().catch(() => null);
+				saveError = body?.error ?? 'Save failed';
+				saveStatus = 'error';
+				return;
+			}
+			lastSavedSnapshot = snapshotAtStart;
+			// If the user made more edits while saving, mark dirty so autosave kicks in again
+			saveStatus = buildSnapshot() === lastSavedSnapshot ? 'saved' : 'dirty';
+		} catch (e: unknown) {
+			saveError = (e as Error)?.message ?? 'Save failed';
+			saveStatus = 'error';
+		}
+	}
+
+	function scheduleAutosave() {
+		if (saveTimer) clearTimeout(saveTimer);
+		saveTimer = setTimeout(() => {
+			saveTimer = null;
+			saveNow();
+		}, AUTOSAVE_DEBOUNCE_MS);
+	}
+
+	// Watch edit state; schedule autosave when the snapshot diverges from the last saved one.
+	$effect(() => {
+		const cid = comicState.comicId;
+		if (!cid || step !== 'edit') return;
+		const snap = buildSnapshot();
+		if (snap === lastSavedSnapshot) return;
+		if (suppressNextAutosave) {
+			suppressNextAutosave = false;
+			lastSavedSnapshot = snap;
+			saveStatus = 'saved';
+			return;
+		}
+		saveStatus = 'dirty';
+		scheduleAutosave();
+	});
+
+	async function copyPublicUrl() {
+		if (!comicPublicUrl) return;
+		try {
+			await navigator.clipboard.writeText(comicPublicUrl);
+			urlCopied = true;
+			setTimeout(() => (urlCopied = false), 2000);
+		} catch {
+			// fallback: select the input text
+		}
+	}
 
 	async function publishComic() {
-		const comicId = (comicState as ComicStateType).comicId;
+		const comicId = comicState.comicId;
 		if (!comicId) {
 			alert('No comic to publish — save or upload an image first.');
 			return;
 		}
-		if (!confirm('Publish this comic? This will make images public. Continue?')) return;
 		publishError = null;
-		publishResults = [];
-		publishDetails = [];
 		publishModalOpen = true;
 		publishStep = 'Starting publish...';
 		publishLoading = true;
 		try {
-			publishStep = 'Copying images to public bucket...';
 			// Send current client-side template and bubbles so server can persist them before publishing
 			const payload = {
-				templateId: (comicState as ComicStateType).templateId,
-				panels: (comicState as ComicStateType).panels.map((p, idx) => ({
+				templateId: comicState.templateId,
+				panels: comicState.panels.map((p: PanelState, idx: number) => ({
 					index: idx + 1,
+					w: p.stageW || undefined,
+					h: p.stageH || undefined,
 					bubbles: p.bubbles
 				}))
 			};
+			publishStep = "Publishing";
 			const res = await fetch(`/api/comics/${comicId}/publish`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -57,8 +181,6 @@
 				publishError = body?.error ?? 'Publish failed';
 				publishStep = 'Failed';
 			} else {
-				publishResults = body.results || [];
-				publishDetails = publishResults;
 				// Build a canonical public URL for the comic (path returned by server)
 				if (body?.comic_path) {
 					comicPublicUrl = `${location.origin}${body.comic_path}`;
@@ -82,7 +204,7 @@
 		const panelsToRemove = comicState.panels.slice(newCount);
 		const wouldLoseContent =
 			comicState.hasContent &&
-			panelsToRemove.some((p) => p.bgImageUrl !== '' || p.bubbles.length > 0);
+			panelsToRemove.some((p: PanelState) => p.bgImageUrl !== '' || p.bubbles.length > 0);
 
 		if (wouldLoseContent) {
 			const dropped = panelsToRemove.length;
@@ -99,21 +221,37 @@
 		await createAndStart(id);
 	}
 
+	function handleThumbnailChange(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0] ?? null;
+		if (!file) return;
+		thumbnailFile = file;
+		if (thumbnailPreviewUrl) URL.revokeObjectURL(thumbnailPreviewUrl);
+		thumbnailPreviewUrl = URL.createObjectURL(file);
+	}
+
+	function removeThumbnail() {
+		thumbnailFile = null;
+		if (thumbnailPreviewUrl) {
+			URL.revokeObjectURL(thumbnailPreviewUrl);
+			thumbnailPreviewUrl = null;
+		}
+	}
+
 	async function createAndStart(templateId: TemplateId) {
 		// If we already have a comicId, just switch template and go to edit
-		if ((comicState as ComicStateType).comicId) {
+		if (comicState.comicId) {
 			comicState.setTemplate(templateId);
 			step = 'edit';
 			return;
 		}
 
-		// Create new comic with the provided name and then enter editor
+		creatingComic = true;
 		try {
-			const payload = { name: newComicName };
 			const res = await fetch('/api/comics', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
+				body: JSON.stringify({ name: newComicName || 'Untitled' })
 			});
 			const body = await res.json();
 			if (!res.ok) {
@@ -121,50 +259,28 @@
 				return;
 			}
 			const newId = body.id;
+
+			// Upload thumbnail if the user selected one
+			if (thumbnailFile) {
+				const fd = new FormData();
+				fd.append('file', thumbnailFile);
+				await fetch(`/api/comics/${newId}/thumbnail`, { method: 'POST', body: fd });
+			}
+
+			suppressNextAutosave = true;
 			comicState.setComicId(newId);
-			comicState.setTitle(newComicName);
-			// Set the chosen template
+			comicState.setTitle(newComicName || 'Untitled');
 			comicState.setTemplate(templateId);
 			step = 'edit';
-		} catch (e: unknown) {
-			alert(String(e));
-		}
-	}
-
-	let saveLoading = $state(false);
-
-	async function saveComic() {
-		const comicId = (comicState as ComicStateType).comicId;
-		if (!comicId) {
-			alert('No comic to save');
-			return;
-		}
-		saveLoading = true;
-		try {
-			const payload = {
-				name: (comicState as ComicStateType).title,
-				templateId: (comicState as ComicStateType).templateId,
-				panels: (comicState as ComicStateType).panels.map((p, idx) => ({ index: idx + 1, bubbles: p.bubbles }))
-			};
-			const res = await fetch(`/api/comics/${comicId}/save`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			if (!res.ok) {
-				const body = await res.json();
-				alert(body?.error ?? 'Save failed');
-			} else {
-				// Optionally show a toast or brief confirmation
-				console.log('Saved');
-			}
+			// Reflect the new comic in the URL so reloads / navigation hydrate correctly
+			await goto(resolve(`/comic?id=${newId}`), { replaceState: true, noScroll: true });
 		} catch (e: unknown) {
 			alert(String(e));
 		} finally {
-			saveLoading = false;
+			creatingComic = false;
 		}
 	}
-
+	
 	// Reactively sync local textarea text when active bubble changes
 	$effect(() => {
 		const activeB = comicState.activeBubble;
@@ -194,41 +310,87 @@
 	<!-- Template Picker -->
 	{#if step === 'select'}
 		<div class="template-picker">
-			<div class="picker-hero">
-				<h2 class="picker-title">Choose your comic layout</h2>
-				<p class="picker-subtitle">Pick a template to get started</p>
-				<div style="margin-top:12px;">
-					<label for="new-comic-name" class="card-label">Comic Title</label>
-					<input id="new-comic-name" type="text" class="comic-title-input" bind:value={newComicName} placeholder="Untitled comic" />
+			<div class="picker-form">
+				<h2 class="picker-title">Create a new comic</h2>
+				<p class="picker-subtitle">Give it a name, add a cover, then pick a layout</p>
+
+				<div class="form-row">
+					<label for="new-comic-name" class="form-label">Comic Title</label>
+					<input
+						id="new-comic-name"
+						type="text"
+						class="form-input"
+						bind:value={newComicName}
+						placeholder="My awesome comic"
+					/>
 				</div>
-			</div>
 
-			<div class="template-cards">
-				<!-- Template A: Classic 3×3 -->
-				<button class="template-card" onclick={() => selectTemplate('grid-3x3')}>
-					<div class="preview-grid preview-3x3">
-						{#each { length: 9 }, i (i)}
-							<div class="preview-cell"></div>
-						{/each}
-					</div>
-					<div class="template-card-info">
-						<span class="template-name">Classic 3×3</span>
-						<span class="template-desc">9 equal panels</span>
-					</div>
-				</button>
+				<div class="form-row">
+					<span class="form-label">Cover Image <span class="form-label-hint">(optional)</span></span>
+					{#if thumbnailPreviewUrl}
+						<div class="thumb-preview-wrap">
+							<img src={thumbnailPreviewUrl} alt="Cover preview" class="thumb-preview" />
+							<button class="thumb-remove" onclick={removeThumbnail} title="Remove">×</button>
+						</div>
+					{:else}
+						<label class="thumb-dropzone" for="thumbnail-input">
+							<span class="thumb-icon">🖼</span>
+							<span class="thumb-label">Click to upload cover image</span>
+							<span class="thumb-hint">JPG · PNG · WebP · recommended 3:4</span>
+						</label>
+						<input
+							id="thumbnail-input"
+							type="file"
+							accept="image/*"
+							class="visually-hidden"
+							onchange={handleThumbnailChange}
+						/>
+					{/if}
+				</div>
 
-				<!-- Template B: Page Layout -->
-				<button class="template-card" onclick={() => selectTemplate('page-1-2-3')}>
-					<div class="preview-grid preview-page">
-						{#each { length: 6 }, i (i)}
-							<div class="preview-cell"></div>
-						{/each}
-					</div>
-					<div class="template-card-info">
-						<span class="template-name">Page Layout</span>
-						<span class="template-desc">6 panels · 1 + 2 + 3</span>
-					</div>
-				</button>
+				<div class="form-divider">
+					<span>Choose a layout to start editing</span>
+				</div>
+
+				<div class="template-cards">
+					<!-- Template A: Classic 3×3 -->
+					<button
+						class="template-card"
+						onclick={() => selectTemplate('grid-3x3')}
+						disabled={creatingComic}
+					>
+						<div class="preview-grid preview-3x3">
+							{#each { length: 9 }, i (i)}
+								<div class="preview-cell"></div>
+							{/each}
+						</div>
+						<div class="template-card-info">
+							<span class="template-name">Classic 3×3</span>
+							<span class="template-desc">9 equal panels</span>
+						</div>
+					</button>
+
+					<!-- Template B: Page Layout -->
+					<button
+						class="template-card"
+						onclick={() => selectTemplate('page-1-2-3')}
+						disabled={creatingComic}
+					>
+						<div class="preview-grid preview-page">
+							{#each { length: 6 }, i (i)}
+								<div class="preview-cell"></div>
+							{/each}
+						</div>
+						<div class="template-card-info">
+							<span class="template-name">Page Layout</span>
+							<span class="template-desc">6 panels · 1 + 2 + 3</span>
+						</div>
+					</button>
+				</div>
+
+				{#if creatingComic}
+					<div class="creating-label">Creating your comic…</div>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -248,19 +410,6 @@
 			<!-- Inspector Sidebar -->
 			<aside class="control-sidebar">
 				<div class="sidebar-card">
-					<label class="card-label">Title</label>
-					<input
-						type="text"
-						class="comic-title-input"
-						value={(comicState as ComicStateType).title}
-						oninput={(e) => comicState.setTitle((e.target as HTMLInputElement).value)}
-					/>
-					<div style="margin-top:8px;display:flex;gap:8px;">
-						<button class="save-button" onclick={saveComic} disabled={saveLoading}>{#if saveLoading}Saving...{:else}Save{/if}</button>
-					</div>
-				</div>
-
-				<div class="sidebar-card">
 					<label for="bubble-text-editor" class="card-label">Bubble Text:</label>
 					<textarea
 						id="bubble-text-editor"
@@ -269,10 +418,6 @@
 						value={bubbleText}
 						oninput={handleTextChange}
 					></textarea>
-				</div>
-
-				<div class="sidebar-card">
-					<span class="card-label">Speech Bubble Palette:</span>
 					<div class="bubble-palette-grid">
 						<BubbleButton
 							type="left-oval"
@@ -307,9 +452,26 @@
 						<BubbleButton type="box" label="Box" onclick={() => handleAddBubble('box')} />
 						<BubbleButton type="burst" label="Burst" onclick={() => handleAddBubble('burst')} />
 					</div>
-				</div>
-
-				<div class="sidebar-card">
+					
+					<button
+						class="save-button"
+						onclick={saveNow}
+						disabled={saveStatus === 'saving'}
+					>
+						{#if saveStatus === 'saving'}Saving…{:else}Save{/if}
+					</button>
+					<div class="save-status" data-status={saveStatus}>
+						{#if saveStatus === 'saving'}
+							<span class="save-dot" aria-hidden="true"></span> Saving…
+						{:else if saveStatus === 'saved'}
+							<span class="save-check" aria-hidden="true">✓</span> All changes saved
+						{:else if saveStatus === 'dirty'}
+							<span class="save-dot save-dot-dirty" aria-hidden="true"></span> Unsaved changes
+						{:else if saveStatus === 'error'}
+							<span class="save-x" aria-hidden="true">!</span>
+							{saveError ?? 'Save failed'}
+						{/if}
+					</div>
 					<button class="publish-button" onclick={publishComic} disabled={publishLoading}>
 						{#if publishLoading}Publishing...{:else}Publish{/if}
 					</button>
@@ -322,37 +484,71 @@
 	{/if}
 
 	{#if publishModalOpen}
-		<section class="publish-banner" role="status" aria-live="polite">
-			<div class="publish-inner">
-				<div class="publish-step">{publishStep}</div>
+		<div
+			class="modal-backdrop"
+			onclick={(e) => { if (e.target === e.currentTarget && !publishLoading) closePublishModal(); }}
+			onkeydown={(e) => { if (e.key === 'Escape' && !publishLoading) closePublishModal(); }}
+			role="dialog"
+			aria-modal="true"
+			aria-live="polite"
+			tabindex={-1}
+		>
+			<div class="modal-card">
 				{#if publishLoading}
-					<div class="spinner" aria-hidden="true"></div>
-				{/if}
-				{#if comicPublicUrl}
-					<div class="publish-public-url">
-						Public comic: <a href={comicPublicUrl} target="_blank" rel="external noreferrer noopener">{comicPublicUrl}</a>
+					<div class="modal-loading">
+						<div class="spinner"></div>
+						<p class="modal-loading-title">Publishing…</p>
+						<p class="modal-loading-step">{publishStep}</p>
+					</div>
+				{:else if publishError}
+					<div class="modal-icon modal-icon-error">✕</div>
+					<h2 class="modal-title">Publish failed</h2>
+					<p class="modal-error-msg">{publishError}</p>
+					<div class="modal-actions">
+						<button class="modal-btn modal-btn-secondary" onclick={closePublishModal}>Dismiss</button>
+					</div>
+				{:else}
+					<button class="modal-close-x" onclick={closePublishModal} title="Close">✕</button>
+					<div class="modal-icon modal-icon-success">✓</div>
+					<h2 class="modal-title">Comic published!</h2>
+					<p class="modal-subtitle">Your comic is live and ready to share.</p>
+
+					{#if comicPublicUrl}
+						<div class="modal-url-row">
+							<input
+								class="modal-url-input"
+								type="text"
+								readonly
+								value={comicPublicUrl}
+								onclick={(e) => (e.target as HTMLInputElement).select()}
+							/>
+							<button
+								class="modal-copy-btn"
+								onclick={copyPublicUrl}
+								title="Copy link"
+							>
+								{#if urlCopied}✓{:else}📋{/if}
+							</button>
+						</div>
+						{#if urlCopied}
+							<span class="modal-copied-hint">Copied!</span>
+						{/if}
+					{/if}
+
+					<div class="modal-actions">
+						{#if comicPublicUrl}
+							<a
+								href={comicPublicUrl}
+								target="_blank"
+								rel="external noreferrer noopener"
+								class="modal-btn modal-btn-primary"
+							>View Comic ↗</a>
+						{/if}
+						<button class="modal-btn modal-btn-secondary" onclick={closePublishModal}>Done</button>
 					</div>
 				{/if}
-				{#if publishDetails && publishDetails.length}
-					<div class="publish-results">
-						<ul>
-							{#each publishDetails as r, idx (r.id || idx)}
-								<li>
-									{#if r.public_url}
-										<a href={r.public_url} target="_blank" rel="external noreferrer noopener">{r.public_url}</a>
-									{:else}
-										<span class="muted">{r.error}</span>
-									{/if}
-								</li>
-							{/each}
-						</ul>
-					</div>
-				{/if}
-				<div class="publish-actions">
-					<button class="publish-close" onclick={closePublishModal}>Dismiss</button>
-				</div>
 			</div>
-		</section>
+		</div>
 	{/if}
 </div>
 
@@ -387,8 +583,7 @@
 	.app-container {
 		display: flex;
 		flex-direction: column;
-		height: 100vh;
-		overflow: hidden;
+		min-height: calc(100dvh - 64px);
 	}
 
 	/* ── Template Picker ── */
@@ -396,21 +591,23 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		flex: 1;
-		gap: 40px;
-		padding: 40px 24px;
 		background: #f8fafc;
-		overflow-y: auto;
+		padding: 40px 16px;
 	}
 
-	.picker-hero {
-		text-align: center;
+	.picker-form {
+		width: 100%;
+		max-width: 600px;
+		display: flex;
+		flex-direction: column;
+		gap: 24px;
 	}
 
 	.picker-title {
-		margin: 0 0 8px;
-		font-size: 2rem;
+		margin: 0 0 4px;
+		font-size: 1.8rem;
 		font-weight: 800;
 		color: #0f172a;
 		letter-spacing: -0.03em;
@@ -418,16 +615,161 @@
 
 	.picker-subtitle {
 		margin: 0;
-		font-size: 1rem;
+		font-size: 0.95rem;
 		color: #64748b;
 		font-weight: 400;
 	}
 
+	/* Form fields */
+	.form-row {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.form-label {
+		font-size: 0.85rem;
+		font-weight: 700;
+		color: #334155;
+		letter-spacing: 0.02em;
+	}
+
+	.form-label-hint {
+		font-weight: 400;
+		color: #94a3b8;
+	}
+
+	.form-input {
+		width: 100%;
+		padding: 10px 14px;
+		border: 2px solid #e2e8f0;
+		border-radius: 8px;
+		font-size: 1rem;
+		font-family: inherit;
+		background: #fff;
+		box-sizing: border-box;
+		transition: border-color 0.15s;
+		color: #0f172a;
+	}
+
+	.form-input:focus {
+		outline: none;
+		border-color: #007f8a;
+	}
+
+	/* Thumbnail */
+	.thumb-dropzone {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		padding: 28px 16px;
+		border: 2px dashed #cbd5e1;
+		border-radius: 12px;
+		cursor: pointer;
+		background: #fff;
+		transition: border-color 0.15s, background 0.15s;
+		text-align: center;
+	}
+
+	.thumb-dropzone:hover {
+		border-color: #007f8a;
+		background: #f0fdfc;
+	}
+
+	.thumb-icon {
+		font-size: 1.8rem;
+	}
+
+	.thumb-label {
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: #334155;
+	}
+
+	.thumb-hint {
+		font-size: 0.78rem;
+		color: #94a3b8;
+	}
+
+	.thumb-preview-wrap {
+		position: relative;
+		display: inline-block;
+		max-width: 200px;
+	}
+
+	.thumb-preview {
+		width: 100%;
+		aspect-ratio: 3 / 4;
+		object-fit: cover;
+		border-radius: 10px;
+		border: 2px solid #e2e8f0;
+		display: block;
+	}
+
+	.thumb-remove {
+		position: absolute;
+		top: -8px;
+		right: -8px;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: #be123c;
+		color: #fff;
+		border: none;
+		font-size: 1rem;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	/* Divider above template cards */
+	.form-divider {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		color: #94a3b8;
+		font-size: 0.82rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+	}
+
+	.form-divider::before,
+	.form-divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: #e2e8f0;
+	}
+
 	.template-cards {
 		display: flex;
-		gap: 28px;
+		gap: 20px;
 		flex-wrap: wrap;
 		justify-content: center;
+	}
+
+	.creating-label {
+		text-align: center;
+		font-size: 0.9rem;
+		color: #007f8a;
+		font-weight: 600;
 	}
 
 	.template-card {
@@ -520,7 +862,7 @@
 		grid-template-columns: 1fr 320px;
 		flex: 1;
 		overflow: hidden;
-		height: 100%;
+		height: calc(100dvh - 64px);
 	}
 
 	.canvas-workspace {
@@ -602,9 +944,10 @@
 
 	/* ── Sidebar ── */
 	.control-sidebar {
+		padding-left: 10px;
+		padding-right: 10px;
 		background: #ffffff;
 		border-left: 1px solid #e2e8f0;
-		padding: 20px;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
@@ -675,63 +1018,281 @@
 		cursor: not-allowed;
 	}
 
-	/* Publish banner */
-	.publish-banner {
+	.save-button {
 		width: 100%;
-		background: #198754;
+		padding: 10px 12px;
+		background: #166534;
 		color: #fff;
-		padding: 12px 16px;
-		box-shadow: 0 2px 8px rgba(2, 6, 23, 0.2);
-		margin-bottom: 12px;
+		font-weight: 700;
+		border-radius: 8px;
+		cursor: pointer;
+		font-family: inherit;
+		transition: background 0.12s, color 0.12s;
+		margin-bottom: 8px;
 	}
-	.publish-inner {
+	.save-button:hover:not([disabled]) {
+		background: #1a237e;
+		color: #ffffff;
+	}
+	.save-button[disabled] {
+		opacity: 0.7;
+		cursor: not-allowed;
+	}
+	.save-status {
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
+		gap: 6px;
+		font-size: 0.78rem;
+		color: #64748b;
+		min-height: 18px;
+		margin-bottom: 12px;
 	}
-	.publish-step {
-		font-weight: 700;
-	}
-	.spinner {
-		width: 20px;
-		height: 20px;
+	.save-status[data-status='saved'] { color: #16a34a; }
+	.save-status[data-status='error'] { color: #b91c1c; }
+	.save-status[data-status='dirty'] { color: #b45309; }
+	.save-dot {
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
-		border: 3px solid rgba(255, 255, 255, 0.18);
-		border-top-color: #60a5fa;
-		animation: spin 0.9s linear infinite;
+		background: #94a3b8;
+		animation: save-pulse 1s ease-in-out infinite;
 	}
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
+	.save-dot-dirty {
+		background: #f59e0b;
+		animation: none;
 	}
-	.publish-results ul {
-		margin: 0;
-		padding-left: 18px;
-	}
-	.publish-close {
-		padding: 6px 10px;
-		border-radius: 6px;
-		background: #e5e7eb;
-		border: none;
-		cursor: pointer;
-	}
-	.publish-public-url {
+	.save-check {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #16a34a;
+		color: #fff;
+		font-size: 10px;
 		font-weight: 700;
-		margin-right: 12px;
 	}
-	.publish-public-url a {
-		color: #60a5fa; /* light blue for strong contrast on dark banner */
-		text-decoration: underline;
+	.save-x {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #b91c1c;
+		color: #fff;
+		font-size: 10px;
+		font-weight: 700;
 	}
-	.publish-public-url a:visited {
-		color: #3b82f6; /* visited color: slightly different blue */
+	@keyframes save-pulse {
+		0%, 100% { opacity: 0.4; }
+		50% { opacity: 1; }
 	}
-	.publish-public-url a:focus,
-	.publish-public-url a:hover {
-		color: #93c5fd;
-		text-decoration: underline;
+
+	/* ── Publish modal ── */
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 500;
+		background: rgba(15, 23, 42, 0.55);
+		backdrop-filter: blur(2px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 16px;
+	}
+
+	.modal-card {
+		background: #fff;
+		border-radius: 20px;
+		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+		padding: 40px 36px 32px;
+		width: 100%;
+		max-width: 440px;
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+		text-align: center;
+		animation: modal-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+	}
+
+	@keyframes modal-in {
+		from { opacity: 0; transform: scale(0.88) translateY(16px); }
+		to   { opacity: 1; transform: scale(1)   translateY(0); }
+	}
+
+	.modal-close-x {
+		position: absolute;
+		top: 14px;
+		right: 14px;
+		background: #f1f5f9;
+		border: none;
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		font-size: 0.8rem;
+		cursor: pointer;
+		color: #64748b;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background 0.12s;
+	}
+	.modal-close-x:hover { background: #e2e8f0; }
+
+	.modal-icon {
+		width: 60px;
+		height: 60px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.6rem;
+		font-weight: 900;
+		margin-bottom: 4px;
+	}
+	.modal-icon-success {
+		background: #dcfce7;
+		color: #16a34a;
+	}
+	.modal-icon-error {
+		background: #fee2e2;
+		color: #dc2626;
+	}
+
+	.modal-title {
+		margin: 0;
+		font-size: 1.35rem;
+		font-weight: 800;
+		color: #0f172a;
+		letter-spacing: -0.02em;
+	}
+
+	.modal-subtitle {
+		margin: 0;
+		font-size: 0.9rem;
+		color: #64748b;
+	}
+
+	.modal-error-msg {
+		margin: 0;
+		font-size: 0.9rem;
+		color: #dc2626;
+		word-break: break-word;
+	}
+
+	/* URL row */
+	.modal-url-row {
+		display: flex;
+		width: 100%;
+		border: 1.5px solid #e2e8f0;
+		border-radius: 10px;
+		overflow: hidden;
+		margin-top: 4px;
+	}
+
+	.modal-url-input {
+		flex: 1;
+		padding: 9px 12px;
+		border: none;
+		outline: none;
+		font-size: 0.8rem;
+		color: #334155;
+		background: #f8fafc;
+		font-family: 'SF Mono', 'Fira Code', monospace;
+		min-width: 0;
+		cursor: text;
+	}
+
+	.modal-copy-btn {
+		padding: 0 14px;
+		border: none;
+		background: #f1f5f9;
+		border-left: 1.5px solid #e2e8f0;
+		cursor: pointer;
+		font-size: 1rem;
+		transition: background 0.12s;
+		flex-shrink: 0;
+	}
+	.modal-copy-btn:hover { background: #e2e8f0; }
+
+	.modal-copied-hint {
+		font-size: 0.78rem;
+		color: #16a34a;
+		font-weight: 600;
+		margin-top: -6px;
+	}
+
+	/* Actions */
+	.modal-actions {
+		display: flex;
+		gap: 10px;
+		width: 100%;
+		margin-top: 8px;
+	}
+
+	.modal-btn {
+		flex: 1;
+		padding: 11px 0;
+		border-radius: 10px;
+		font-size: 0.9rem;
+		font-weight: 700;
+		cursor: pointer;
+		text-align: center;
+		text-decoration: none;
+		border: none;
+		transition: background 0.12s, transform 0.1s;
+	}
+	.modal-btn:active { transform: scale(0.97); }
+
+	.modal-btn-primary {
+		background: #007f8a;
+		color: #fff;
+	}
+	.modal-btn-primary:hover { background: #005f68; }
+
+	.modal-btn-secondary {
+		background: #f1f5f9;
+		color: #334155;
+	}
+	.modal-btn-secondary:hover { background: #e2e8f0; }
+
+	/* Loading state */
+	.modal-loading {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 14px;
+		padding: 8px 0;
+	}
+
+	.spinner {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 3px solid #e2e8f0;
+		border-top-color: #007f8a;
+		animation: spin 0.8s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	.modal-loading-title {
+		margin: 0;
+		font-size: 1.1rem;
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.modal-loading-step {
+		margin: 0;
+		font-size: 0.85rem;
+		color: #64748b;
 	}
 
 	/* ── Print ── */

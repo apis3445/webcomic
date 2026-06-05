@@ -50,6 +50,7 @@
 				type="email"
 				class="field-input"
 				placeholder="you@example.com"
+				autocomplete="username"
 				required
 			/>
 		</div>
@@ -72,6 +73,7 @@
 				type="password"
 				class="field-input"
 				placeholder="••••••••"
+				autocomplete="current-password"
 				required
 			/>
 		</div>

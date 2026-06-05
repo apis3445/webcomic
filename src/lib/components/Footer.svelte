@@ -5,13 +5,17 @@
 	<!-- Bottom bar -->
 	<div class="footer-bottom">
 		<p class="footer-copy">© {new Date().getFullYear()} WebComic. Made with ❤️ for storytellers.</p>
-		<p class="footer-made">Your story, your panels.</p>
+		<p class="footer-made">Your story, your comicss.</p>
 	</div>
 </footer>
 
 <style>
 	.footer {
-		position: relative;
+		position: fixed;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		z-index: 100;
 		background: linear-gradient(135deg, #e8eaf6 0%, #e3f2fd 100%);
 		border-top: 3.5px solid #1a237e;
 		overflow: hidden;
@@ -32,9 +36,8 @@
 		position: relative;
 		z-index: 1;
 		border-top: 2px solid rgba(26, 35, 126, 0.18);
-		max-width: 1200px;
 		margin: 0 auto;
-		padding: 1.4rem 0 1.8rem;
+		padding: .8rem;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;

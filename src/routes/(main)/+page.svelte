@@ -69,7 +69,7 @@
 	</div>
 
 	<div class="hero-content">
-		<h1 class="hero-title">Your Story.<br />Your Comic.</h1>
+		<h1 class="hero-title">Your Story.<br />Your Comics.</h1>
 		<p class="hero-sub">
 			Turn your ideas into a webcomic in minutes. Pick a template, drop in your images, add speech
 			bubbles — and share it with the world.
@@ -95,7 +95,6 @@
 			</a>
 			<a href={resolve('/comic')} class="cta-ghost">Editor →</a>
 		</div>
-		<p class="hero-note">Takes about 5 minutes · No design skills needed</p>
 	</div>
 </section>
 
@@ -162,7 +161,7 @@
 			Create your comic — it's free
 		</a>
 		<p class="cta-strip-note">
-			No account? <a href={resolve('/comic')} class="cta-strip-link">Browse comics first</a>
+			No account? <a href={resolve('/browse')} class="cta-strip-link">Browse comics first</a>
 		</p>
 	</div>
 </section>
@@ -379,14 +378,6 @@
 		transform: translateY(-1px);
 	}
 
-	.hero-note {
-		font-size: 1.05rem;
-		font-weight: 600;
-		color: #3f51b5;
-		letter-spacing: 0.01em;
-		margin: 0;
-	}
-
 	/* ── Features ── */
 	.features {
 		background: #f4f7fc;
@@ -512,7 +503,7 @@
 		background: linear-gradient(135deg, #e8eaf6 0%, #e0f7fa 100%);
 		border-top: 3.5px solid #1a237e;
 		border-bottom: 3.5px solid #1a237e;
-		padding: 6rem 1.5rem;
+		padding: 1.5rem;
 		position: relative;
 		overflow: hidden;
 	}
