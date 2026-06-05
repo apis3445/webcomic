@@ -32,8 +32,8 @@
 		<div class="hero-left">
 			<div class="hero-copy">
 				<div class="badge">✦ New — Comic creator v2</div>
-				<h1 class="hero-title">Web Comic</h1>
-				<p class="hero-sub">Create your comic universe with exciting templates and features!</p>
+				<h1 class="hero-title">Zinemash</h1>
+				<p class="hero-sub">Mash your pages into a zine — drop photos, panels and doodles into a comic universe.</p>
 			</div>
 		</div>
 
@@ -301,7 +301,12 @@
 
 	.auth-tabs {
 		display: flex;
-		border-bottom: 2px solid #e2e8f0;
+		gap: 0.4rem;
+		padding: 0.3rem;
+		background: rgba(63, 81, 181, 0.08);
+		border: 2.5px solid #1a237e;
+		border-radius: 14px;
+		box-shadow: 3px 3px 0 #3f51b5;
 	}
 
 	.tab-btn {
@@ -309,40 +314,278 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.4rem;
-		padding: 0.7rem 1rem;
-		background: none;
-		border: none;
-		border-bottom: 2px solid transparent;
-		margin-bottom: -2px;
-		font-size: 0.88rem;
-		font-weight: 600;
-		color: #94a3b8;
+		gap: 0.35rem;
+		padding: 0.55rem 0.6rem;
+		background: transparent;
+		border: 2px solid transparent;
+		border-radius: 8px;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		font-weight: 700;
+		color: #3f51b5;
 		cursor: pointer;
 		transition:
 			color 0.18s,
-			border-color 0.18s;
-		font-family: inherit;
+			background 0.18s,
+			border-color 0.18s,
+			box-shadow 0.12s,
+			transform 0.08s;
 	}
 
 	.tab-btn:hover {
-		color: #5b21b6;
+		color: #1a237e;
+		background: rgba(255, 255, 255, 0.6);
 	}
 
 	.tab-btn.active {
-		color: #5b21b6;
-		border-bottom-color: #5b21b6;
+		color: #1a237e;
+		background: #fbbf24;
+		border-color: #1a237e;
+		box-shadow: 2px 2px 0 #1a237e;
 	}
 
 	/* RIGHT PANEL */
 	.hero-right {
+		position: relative;
 		width: 42%;
-		background: #f8fafc;
+		background: #f4f7fc;
 		display: flex;
 		flex-direction: column;
 		justify-content: space-between;
-		border-left: 1px solid #e2e8f0;
+		border-left: 2.5px solid #1a237e;
 		min-height: 100%;
+	}
+
+	/* Halftone dot pattern background matching landing page */
+	.hero-right::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background-image: radial-gradient(rgba(63, 81, 181, 0.08) 1.5px, transparent 1.5px);
+		background-size: 18px 18px;
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.form-wrap {
+		position: relative;
+		z-index: 1;
+		padding: 3rem 3rem 2rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.4rem;
+		font-family: 'Comic Neue', system-ui, sans-serif;
+	}
+
+	.form-header {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.form-title {
+		font-family: 'Caveat', cursive;
+		font-size: 3rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		margin: 0;
+		color: #fbbf24;
+		line-height: 0.95;
+		-webkit-text-stroke: 2px #1a237e;
+		text-shadow: 4px 4px 0 #3f51b5;
+		paint-order: stroke fill;
+	}
+
+	.form-desc {
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1.05rem;
+		color: #283593;
+		margin: 0 0 0.2rem;
+		line-height: 1.5;
+	}
+
+	/* ── FORM FIELDS (shared with PasswordLogin / SignUp children) ── */
+	:global(.field) {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		margin-bottom: 1.1rem;
+	}
+
+	:global(.field-label) {
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		font-weight: 700;
+		color: #1a237e;
+		letter-spacing: 0.01em;
+	}
+
+	:global(.field-input-wrap) {
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
+
+	:global(.field-input-wrap.has-icon .field-icon) {
+		position: absolute;
+		left: 0.85rem;
+		width: 18px;
+		height: 18px;
+		color: #3f51b5;
+		pointer-events: none;
+		z-index: 1;
+	}
+
+	:global(.field-input) {
+		width: 100%;
+		padding: 0.75rem 1rem;
+		font-family: 'Comic Neue', 'Patrick Hand', sans-serif;
+		font-size: 1rem;
+		font-weight: 500;
+		color: #1a237e;
+		background: #ffffff;
+		border: 2.5px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 3px 3px 0 #3f51b5;
+		transition:
+			border-color 0.15s,
+			box-shadow 0.1s,
+			transform 0.1s;
+		box-sizing: border-box;
+	}
+
+	:global(.field-input-wrap.has-icon .field-input) {
+		padding-left: 2.5rem;
+	}
+
+	:global(.field-input::placeholder) {
+		color: #9ca3c4;
+		font-weight: 400;
+	}
+
+	:global(.field-input:focus) {
+		outline: none;
+		border-color: #1a237e;
+		box-shadow: 4px 4px 0 #06b6d4;
+	}
+
+	:global(.field-input:hover:not(:focus)) {
+		transform: translate(-1px, -1px);
+		box-shadow: 4px 4px 0 #3f51b5;
+	}
+
+	:global(.field-error) {
+		display: block;
+		margin-top: 0.3rem;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 0.95rem;
+		font-weight: 700;
+		color: #dc2626;
+	}
+
+	/* ── SUBMIT BUTTON (shared) — mirrors .cta-primary on landing ── */
+	:global(.submit-btn) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.6rem;
+		width: 100%;
+		padding: 0.9rem 1.5rem;
+		margin-top: 0.5rem;
+		font-family: 'Patrick Hand', sans-serif;
+		font-size: 1.15rem;
+		font-weight: 800;
+		letter-spacing: 0.02em;
+		color: #1a237e;
+		background: #fbbf24;
+		border: 3px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 5px 5px 0 #1a237e;
+		cursor: pointer;
+		transition:
+			transform 0.1s ease,
+			box-shadow 0.1s ease,
+			background 0.15s;
+	}
+
+	:global(.submit-btn:hover:not(:disabled)) {
+		transform: translate(-2px, -2px);
+		box-shadow: 7px 7px 0 #1a237e;
+		background: #fcd34d;
+	}
+
+	:global(.submit-btn:active:not(:disabled)) {
+		transform: translate(2px, 2px);
+		box-shadow: 3px 3px 0 #1a237e;
+	}
+
+	:global(.submit-btn:disabled) {
+		cursor: not-allowed;
+		opacity: 0.65;
+	}
+
+	:global(.btn-icon) {
+		width: 18px;
+		height: 18px;
+	}
+
+	:global(.spinner) {
+		width: 16px;
+		height: 16px;
+		border: 2.5px solid rgba(26, 35, 126, 0.25);
+		border-top-color: #1a237e;
+		border-radius: 50%;
+		animation: spin 0.7s linear infinite;
+	}
+
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* ── MESSAGE BANNERS (shared) ── */
+	:global(.msg-banner) {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.55rem;
+		padding: 0.75rem 0.9rem;
+		border: 2.5px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 3px 3px 0 #3f51b5;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		font-weight: 700;
+		margin-bottom: 1rem;
+	}
+
+	:global(.msg-banner.success) {
+		background: #d1fae5;
+		color: #065f46;
+	}
+
+	:global(.msg-banner.error) {
+		background: #fee2e2;
+		color: #991b1b;
+	}
+
+	:global(.msg-icon) {
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	/* ── FOOTER ── */
+	.form-footer {
+		position: relative;
+		z-index: 1;
+		padding: 1.25rem 3rem 2rem;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		color: #3f51b5;
+		text-align: center;
+		border-top: 2px dashed rgba(63, 81, 181, 0.3);
 	}
 
 	.heart {
