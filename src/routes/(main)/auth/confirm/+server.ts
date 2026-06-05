@@ -2,11 +2,26 @@ import type { EmailOtpType } from '@supabase/supabase-js';
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 
+// Defence in depth: only accept `next` values that are clearly a same-site
+// relative path. Even though URL.pathname encoding mostly prevents
+// cross-origin redirects, an attacker-controlled `next` could still
+// CRLF-inject, traverse to unintended paths, or be flipped to a
+// protocol-relative URL via `//evil.com`. Reject anything other than a
+// single-leading-slash path made of safe characters.
+function sanitizeNext(raw: string | null): string {
+	if (!raw) return '/comic';
+	if (!raw.startsWith('/')) return '/comic';
+	if (raw.startsWith('//')) return '/comic'; // protocol-relative
+	if (raw.includes('\\') || raw.includes('\n') || raw.includes('\r')) return '/comic';
+	if (raw.includes('://')) return '/comic';
+	return raw;
+}
+
 export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	const code = url.searchParams.get('code');
 	const token_hash = url.searchParams.get('token_hash');
 	const type = url.searchParams.get('type') as EmailOtpType | null;
-	const next = url.searchParams.get('next') ?? '/comic';
+	const next = sanitizeNext(url.searchParams.get('next'));
 
 	const redirectTo = new URL(url);
 	redirectTo.pathname = next;

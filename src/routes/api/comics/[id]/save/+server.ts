@@ -1,7 +1,30 @@
+import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+function newReqId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
+
+// Log a structured save error (safe in prod) and return a generic 500 to the client.
+// Detailed Supabase fields are only logged in dev to avoid leaking schema/Postgres
+// constraint names through centralized log aggregators.
+function saveErrorResponse(reqId: string, stage: string, error: unknown, status = 500): Response {
+	const err = (error ?? {}) as { message?: string; code?: string; name?: string; status?: number };
+	console.error('[save]', reqId, stage, {
+		status: err.status,
+		code: err.code,
+		name: err.name,
+		...(dev ? { message: err.message } : {})
+	});
+	return new Response(
+		JSON.stringify({ error: 'Could not save your comic. Please try again.', reqId }),
+		{ status }
+	);
+}
+
 export const POST: RequestHandler = async ({ params, locals, request }) => {
+	const reqId = newReqId();
 	const comicId = params.id;
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
@@ -31,8 +54,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 			.update({ name: payload.name })
 			.eq('id', comicId);
 		if (updErr) {
-			console.error('failed to update comic name', updErr);
-			return new Response(JSON.stringify({ error: updErr.message }), { status: 500 });
+			return saveErrorResponse(reqId, 'update_comic_name', updErr);
 		}
 	}
 
@@ -94,8 +116,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 					.update({ template_id: safeTemplateId })
 					.eq('id', sheetRow.id);
 				if (tmplUpdErr) {
-					console.error('save: sheet template update failed', tmplUpdErr);
-					return new Response(JSON.stringify({ error: tmplUpdErr.message }), { status: 500 });
+					return saveErrorResponse(reqId, 'sheet_template_update', tmplUpdErr);
 				}
 			}
 
@@ -123,10 +144,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 						.eq('index', idx)
 						.order('created_at', { ascending: true });
 					if (panelSelectErr) {
-						console.error('save: panel select failed', panelSelectErr);
-						return new Response(JSON.stringify({ error: panelSelectErr.message }), {
-							status: 500
-						});
+						return saveErrorResponse(reqId, 'panel_select', panelSelectErr);
 					}
 					let panelId: string;
 					if (existingPanels && existingPanels.length > 0) {
@@ -150,10 +168,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 								.update(geom)
 								.eq('id', panelId);
 							if (panelUpdErr) {
-								console.error('save: panel update failed', panelUpdErr);
-								return new Response(JSON.stringify({ error: panelUpdErr.message }), {
-									status: 500
-								});
+								return saveErrorResponse(reqId, 'panel_update', panelUpdErr);
 							}
 						}
 					} else {
@@ -185,13 +200,10 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 						.delete()
 						.eq('panel_id', panelId);
 					if (bubbleDelErr) {
-						console.error('save: bubble delete failed', bubbleDelErr);
-						return new Response(JSON.stringify({ error: bubbleDelErr.message }), {
-							status: 500
-						});
+						return saveErrorResponse(reqId, 'bubble_delete', bubbleDelErr);
 					}
 					if (Array.isArray(p.bubbles) && p.bubbles.length) {
-						const toInsert = p.bubbles.map((b: any) => ({
+						const toInsert = p.bubbles.map((b: any, bi: number) => ({
 							panel_id: panelId,
 							sheet_id: sheetId,
 							author_id: userId,
@@ -200,25 +212,23 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							y: b.y,
 							w: b.width ?? b.w,
 							h: b.height ?? b.h,
-							z_index: b.z_index ?? 0,
+							// Preserve insertion order if the client (or legacy state)
+							// didn't send a z_index. Avoids every bubble stacking at 0.
+							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
 						const { error: bubbleInsErr } = await locals.supabase
 							.from('bubbles')
 							.insert(toInsert);
 						if (bubbleInsErr) {
-							console.error('save: bubble insert failed', bubbleInsErr);
-							return new Response(JSON.stringify({ error: bubbleInsErr.message }), {
-								status: 500
-							});
+							return saveErrorResponse(reqId, 'bubble_insert', bubbleInsErr);
 						}
 					}
 				}
 			}
 		}
 	} catch (e: any) {
-		console.error('Failed to persist panels/bubbles during save', e);
-		return new Response(JSON.stringify({ error: e?.message ?? 'save failed' }), { status: 500 });
+		return saveErrorResponse(reqId, 'unexpected', e);
 	}
 
 	return new Response(JSON.stringify({ success: true }), { status: 200 });

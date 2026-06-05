@@ -146,7 +146,7 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		if (!url && img.storage_path) {
 			const { data } = await locals.supabase.storage
 				.from(img.bucket || 'comics')
-				.createSignedUrl(img.storage_path, 60 * 60);
+				.createSignedUrl(img.storage_path, 60 * 60 * 24);
 			url = data?.signedUrl ?? null;
 		}
 		imageUrlByPanel.set(img.panel_id, url);
@@ -169,7 +169,11 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 			y: b.y ?? 0,
 			width: b.w ?? 140,
 			height: b.h ?? 50,
-			type: toBubbleType(b.style)
+			type: toBubbleType(b.style),
+			// Fallback to insertion order so legacy bubbles (all z_index=0) get
+			// a deterministic, stable order on first reload instead of "whatever
+			// the DB returned this time".
+			z_index: typeof b.z_index === 'number' ? b.z_index : bi
 		}))
 	}));
 

@@ -61,11 +61,14 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
 	const panelIds = (panels || []).map((p: any) => p.id);
 
-	// Fetch bubbles for these panels
+	// Fetch bubbles for these panels. Order by z_index so the public viewer
+	// renders the same stacking the user set in the editor; created_at is the
+	// stable tiebreak when two bubbles share a z (e.g. legacy rows pre-z_index).
 	const { data: bubbles, error: bubblesErr } = await locals.supabase
 		.from('bubbles')
-		.select('id, panel_id, text, x, y, w, h, z_index, style, author_id')
+		.select('id, panel_id, text, x, y, w, h, z_index, style, author_id, created_at')
 		.in('panel_id', panelIds)
+		.order('z_index', { ascending: true })
 		.order('created_at', { ascending: true });
 
 	if (bubblesErr) {

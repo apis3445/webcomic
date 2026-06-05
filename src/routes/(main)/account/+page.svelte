@@ -4,7 +4,12 @@
 	import Avatar from './Avatar.svelte';
 
 	let { data, form } = $props();
-	let { claims, supabase, profile } = $derived(data);
+	// Individual $derived bindings so each field tracks `data` independently.
+	// `let { claims, supabase, profile } = $derived(data)` only computes the
+	// destructure once and never updates if data.profile changes later.
+	const claims = $derived(data.claims);
+	const supabase = $derived(data.supabase);
+	const profile = $derived(data.profile);
 	let profileForm: HTMLFormElement;
 	let loadingProfile = $state(false);
 	let loadingPassword = $state(false);

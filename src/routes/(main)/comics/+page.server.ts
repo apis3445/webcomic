@@ -23,7 +23,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			if (!c.thumbnail_path) return { ...c, thumbnail_url: null };
 			const { data } = await locals.supabase.storage
 				.from('comics')
-				.createSignedUrl(c.thumbnail_path, 60 * 60);
+				.createSignedUrl(c.thumbnail_path, 60 * 60 * 24);
 			return { ...c, thumbnail_url: data?.signedUrl ?? null };
 		})
 	);

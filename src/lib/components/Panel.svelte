@@ -12,29 +12,88 @@
 	let height = $state(0);
 	let fileInput: HTMLInputElement | undefined;
 	let uploading = $state(false);
+	let uploadError = $state<string | null>(null);
+	let errorTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	function showUploadError(message: string) {
+		uploadError = message;
+		if (errorTimeout) clearTimeout(errorTimeout);
+		errorTimeout = setTimeout(() => {
+			uploadError = null;
+			errorTimeout = null;
+		}, 6000);
+	}
+
+	function dismissUploadError() {
+		uploadError = null;
+		if (errorTimeout) {
+			clearTimeout(errorTimeout);
+			errorTimeout = null;
+		}
+	}
+
+	async function readErrorMessage(res: Response, fallback: string): Promise<string> {
+		try {
+			const body = await res.json();
+			if (body && typeof body.error === 'string' && body.error.length > 0) return body.error;
+		} catch {
+			/* ignore JSON parse errors */
+		}
+		return fallback;
+	}
 
 	const panel = $derived(comicState.panels[index]);
 	const bgImage = $derived(panel.bgImage);
-	const bubbles = $derived(panel.bubbles);
+	// Render in z_index order so overlapping bubbles stack deterministically
+	// (lower z renders first, higher z paints on top). Stable id-tiebreak
+	// keeps ordering predictable when two bubbles share a z.
+	const bubbles = $derived(
+		[...panel.bubbles].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0) || a.id - b.id)
+	);
 	const isActivePanel = $derived(comicState.activePanelIndex === index);
+
+	// Must match the ALLOWED set in src/routes/api/upload-image/+server.ts
+	const ALLOWED_IMAGE_MIME = new Set([
+		'image/jpeg',
+		'image/png',
+		'image/webp',
+		'image/gif',
+		'image/svg+xml'
+	]);
+
+	function isAllowedImage(file: File): boolean {
+		// Some browsers report empty type for SVG/uncommon files — accept those by extension as a fallback
+		if (file.type && ALLOWED_IMAGE_MIME.has(file.type)) return true;
+		const ext = file.name.toLowerCase().split('.').pop();
+		return (
+			ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif' || ext === 'svg'
+		);
+	}
 
 	function dragOver(e: DragEvent) {
 		e.preventDefault();
 	}
 
-	function drop(e: DragEvent) {
+	async function drop(e: DragEvent) {
 		e.preventDefault();
 		const file = e.dataTransfer?.files[0];
-		if (file && (file.type === 'image/jpeg' || file.type === 'image/png')) {
-			comicState.setPanelBgImage(index, URL.createObjectURL(file));
+		if (!file) return;
+		if (!isAllowedImage(file)) {
+			showUploadError('Only image files are allowed (jpg, png, webp, gif, svg).');
+			return;
 		}
+		await uploadImageServer(file, index);
 	}
 
 	async function handleFileSelect(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
-		if (file && (file.type === 'image/jpeg' || file.type === 'image/png')) {
-			await uploadImageServer(file, index);
+		if (file) {
+			if (!isAllowedImage(file)) {
+				showUploadError('Only image files are allowed (jpg, png, webp, gif, svg).');
+			} else {
+				await uploadImageServer(file, index);
+			}
 		}
 		// Reset input so same file can be selected again
 		input.value = '';
@@ -42,6 +101,24 @@
 
 	async function uploadImageServer(file: File, panelIndex: number) {
 		uploading = true;
+		dismissUploadError();
+
+		// Optimistic preview: paint the local file into the panel immediately
+		// so the user gets instant visual feedback. We KEEP this blob URL for
+		// the rest of the session — the upload result returns a signed URL
+		// that's identical pixels, and swapping to it would force the browser
+		// to re-decode the same image (causing the brief "blank canvas" the
+		// user reported). On next reload, the server hydrates from the
+		// signed URL anyway, so we lose nothing by not swapping now.
+		let previewLoaded = false;
+		try {
+			const previewUrl = URL.createObjectURL(file);
+			await comicState.setPanelBgImage(panelIndex, previewUrl);
+			previewLoaded = true;
+		} catch (err) {
+			console.warn('preview blob failed to load — will fall back to signed URL', err);
+		}
+
 		try {
 			// Ensure comic exists server-side
 			let comicId: string | null = comicState.comicId;
@@ -52,13 +129,19 @@
 					body: JSON.stringify({ name: 'Untitled', description: '' })
 				});
 				if (!res.ok) {
-					console.error('Failed to create comic');
+					const msg = await readErrorMessage(
+						res,
+						'Could not create your comic. Please try again.'
+					);
+					console.error('Failed to create comic', { status: res.status });
+					showUploadError(msg);
 					return;
 				}
 				const body = await res.json();
 				comicId = body.id ?? null;
 				if (!comicId) {
 					console.error('Comic create response missing id');
+					showUploadError('Comic could not be created. Please try again.');
 					return;
 				}
 				comicState.setComicId(comicId);
@@ -181,15 +264,40 @@
 
 			const uploadRes = await fetch('/api/upload-image', { method: 'POST', body: form });
 			if (!uploadRes.ok) {
-				console.error('Upload failed');
+				const msg = await readErrorMessage(
+					uploadRes,
+					uploadRes.status === 401
+						? 'You need to sign in to upload images.'
+						: 'Could not save the image. Please try again.'
+				);
+				console.error('Upload failed', { status: uploadRes.status });
+				showUploadError(msg);
 				return;
 			}
 			const data = await uploadRes.json();
-			if (data.url) {
-				comicState.setPanelBgImage(panelIndex, data.url);
+			if (data?.url) {
+				// Only swap to the signed URL if the optimistic preview never
+				// rendered (createObjectURL threw, blob decode failed, etc.).
+				// Skipping the swap when the preview is already showing avoids
+				// a re-fetch of identical pixels and the visible "blank canvas"
+				// flash while the new <img> downloads.
+				if (!previewLoaded) {
+					try {
+						await comicState.setPanelBgImage(panelIndex, data.url);
+					} catch (loadErr) {
+						console.error('Image saved but failed to display', loadErr);
+						showUploadError(
+							'Your image was uploaded but could not be displayed. Refresh the page to retry.'
+						);
+					}
+				}
+			} else {
+				console.error('Upload succeeded but no URL returned', data);
+				showUploadError('Image uploaded but could not be displayed. Please refresh.');
 			}
 		} catch (err) {
 			console.error('uploadImageServer error', err);
+			showUploadError('Network error while uploading. Please check your connection and try again.');
 		} finally {
 			uploading = false;
 		}
@@ -348,7 +456,7 @@
 	<input
 		bind:this={fileInput}
 		type="file"
-		accept="image/jpeg,image/png"
+		accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml"
 		onchange={handleFileSelect}
 		style="display: none;"
 	/>
@@ -515,6 +623,37 @@
 					</div>
 				</div>
 			{/if}
+
+			{#if uploadError}
+				<div class="upload-error" role="alert" aria-live="assertive">
+					<svg
+						class="upload-error-icon"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<circle cx="12" cy="12" r="10" />
+						<line x1="12" y1="8" x2="12" y2="12" />
+						<line x1="12" y1="16" x2="12.01" y2="16" />
+					</svg>
+					<span class="upload-error-text">{uploadError}</span>
+					<button
+						type="button"
+						class="upload-error-close"
+						onclick={(e) => {
+							e.stopPropagation();
+							dismissUploadError();
+						}}
+						aria-label="Dismiss error"
+					>
+						×
+					</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -642,6 +781,71 @@
 	@keyframes spin {
 		to {
 			transform: rotate(360deg);
+		}
+	}
+
+	/* Upload error banner */
+	.upload-error {
+		position: absolute;
+		left: 8px;
+		right: 8px;
+		bottom: 8px;
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		padding: 0.6rem 0.8rem;
+		background: #fee2e2;
+		color: #991b1b;
+		border: 2.5px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 3px 3px 0 #3f51b5;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 0.95rem;
+		font-weight: 700;
+		line-height: 1.3;
+		z-index: 7;
+		animation: error-slide-in 0.2s ease;
+	}
+
+	.upload-error-icon {
+		width: 20px;
+		height: 20px;
+		flex-shrink: 0;
+		color: #991b1b;
+		margin-top: 1px;
+	}
+
+	.upload-error-text {
+		flex: 1;
+		min-width: 0;
+		word-break: break-word;
+	}
+
+	.upload-error-close {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		color: #991b1b;
+		font-size: 1.4rem;
+		line-height: 1;
+		font-weight: 800;
+		cursor: pointer;
+		padding: 0 0.25rem;
+		margin: -2px -2px 0 0;
+	}
+
+	.upload-error-close:hover {
+		color: #1a237e;
+	}
+
+	@keyframes error-slide-in {
+		from {
+			opacity: 0;
+			transform: translateY(6px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
 		}
 	}
 </style>
