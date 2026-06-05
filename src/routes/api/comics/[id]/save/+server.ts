@@ -75,7 +75,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 					.maybeSingle();
 				if (tmpl && (tmpl as any).id) safeTemplateId = (tmpl as any).id;
 				else if (payload.templateId)
-					console.warn(`save: could not resolve template slug "${payload.templateId}"`);
+					console.warn('[save]', reqId, `could not resolve template slug "${payload.templateId}"`);
 			}
 		}
 
@@ -88,7 +88,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.eq('number', 1)
 				.maybeSingle();
 			if (sheetSelectErr) {
-				console.error('save: sheet select failed', sheetSelectErr);
+				console.error('[save]', reqId, 'sheet select failed', sheetSelectErr);
 				return new Response(JSON.stringify({ error: 'Failed to load sheet' }), { status: 500 });
 			}
 			let sheetRow: { id: string } | null = sheetSelect as { id: string } | null;
@@ -99,7 +99,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 					.select('id')
 					.single();
 				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
-					console.error('failed to create sheet', newSheetErr);
+					console.error('[save]', reqId, 'failed to create sheet', newSheetErr);
 					return new Response(JSON.stringify({ error: 'Failed to ensure sheet exists' }), {
 						status: 500
 					});
@@ -132,7 +132,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				for (const p of payload.panels) {
 					const idx = p.index;
 					if (typeof idx !== 'number' || !Number.isFinite(idx)) {
-						console.warn('save: skipping panel with invalid index', p);
+						console.warn('[save]', reqId, 'skipping panel with invalid index', p);
 						continue;
 					}
 					// Pick the oldest existing panel for this (sheet, index). Tolerates legacy
@@ -150,7 +150,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 					if (existingPanels && existingPanels.length > 0) {
 						const candidate = (existingPanels[0] as any).id;
 						if (typeof candidate !== 'string') {
-							console.error('save: existing panel missing id', existingPanels[0]);
+							console.error('[save]', reqId, 'existing panel missing id', existingPanels[0]);
 							return new Response(JSON.stringify({ error: 'Invalid panel record' }), {
 								status: 500
 							});
@@ -185,7 +185,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							.select('id')
 							.single();
 						if (insertErr || !insertedPanel || typeof (insertedPanel as any).id !== 'string') {
-							console.error('failed to insert panel', insertErr);
+							console.error('[save]', reqId, 'failed to insert panel', insertErr);
 							return new Response(JSON.stringify({ error: 'Failed to insert panel' }), {
 								status: 500
 							});

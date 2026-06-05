@@ -1,3 +1,4 @@
+import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -14,12 +15,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!file) return new Response(JSON.stringify({ error: 'file is required' }), { status: 400 });
 
 	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	console.log('upload-image auth.getUser result', { userData, userErr });
+	if (dev) console.log('upload-image auth.getUser result', { userData, userErr });
 	const userId = userData?.user?.id;
 	if (userErr || !userId) {
 		console.error('upload-image: no authenticated user', { userErr });
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
-	} else {
+	} else if (dev) {
 		console.log('upload-image: authenticated userId', userId);
 	}
 
@@ -38,13 +39,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	// Ensure sheet exists (sheetNumber)
-	let sheetId!: string;
-	const { data: existingSheet } = await locals.supabase
+	let sheetId: string;
+	const { data: existingSheet, error: existingSheetErr } = await locals.supabase
 		.from('sheets')
 		.select('id')
 		.eq('comic_id', comicId)
 		.eq('number', sheetNumber)
 		.maybeSingle();
+	if (existingSheetErr) {
+		console.error('Failed to lookup sheet', existingSheetErr);
+		return new Response(JSON.stringify({ error: existingSheetErr.message }), { status: 500 });
+	}
 	if (existingSheet && (existingSheet as any).id) {
 		sheetId = (existingSheet as any).id;
 	} else {
@@ -116,20 +121,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			return 'image/webp';
 		if (bytes.length >= 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46)
 			return 'image/gif';
-		const head = new TextDecoder().decode(bytes.slice(0, 256)).toLowerCase();
-		if (head.includes('<svg')) return 'image/svg+xml';
 		return null;
 	}
 
-	const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']);
+	const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 	const detected = detectImageMime(uint8);
-	const mime = detected || file.type || '';
-	if (!mime || !ALLOWED.has(mime)) {
+	if (!detected || !ALLOWED.has(detected)) {
 		return new Response(
-			JSON.stringify({ error: 'Only image files are allowed (jpg, png, webp, gif, svg).' }),
+			JSON.stringify({ error: 'Only image files are allowed (jpg, png, webp, gif).' }),
 			{ status: 400 }
 		);
 	}
+	const mime = detected;
 
 	// Upload to storage with explicit content type
 	const filename = `${Date.now()}-${file.name}`;
