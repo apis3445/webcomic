@@ -57,16 +57,14 @@
 		'image/jpeg',
 		'image/png',
 		'image/webp',
-		'image/gif',
-		'image/svg+xml'
+		'image/gif'
 	]);
 
 	function isAllowedImage(file: File): boolean {
-		// Some browsers report empty type for SVG/uncommon files — accept those by extension as a fallback
 		if (file.type && ALLOWED_IMAGE_MIME.has(file.type)) return true;
 		const ext = file.name.toLowerCase().split('.').pop();
 		return (
-			ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif' || ext === 'svg'
+			ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif'
 		);
 	}
 
@@ -79,7 +77,7 @@
 		const file = e.dataTransfer?.files[0];
 		if (!file) return;
 		if (!isAllowedImage(file)) {
-			showUploadError('Only image files are allowed (jpg, png, webp, gif, svg).');
+			showUploadError('Only image files are allowed (jpg, png, webp, gif).');
 			return;
 		}
 		await uploadImageServer(file, index);
@@ -90,7 +88,7 @@
 		const file = input.files?.[0];
 		if (file) {
 			if (!isAllowedImage(file)) {
-				showUploadError('Only image files are allowed (jpg, png, webp, gif, svg).');
+				showUploadError('Only image files are allowed (jpg, png, webp, gif).');
 			} else {
 				await uploadImageServer(file, index);
 			}
@@ -111,12 +109,17 @@
 		// user reported). On next reload, the server hydrates from the
 		// signed URL anyway, so we lose nothing by not swapping now.
 		let previewLoaded = false;
+		const previewUrl = URL.createObjectURL(file);
 		try {
-			const previewUrl = URL.createObjectURL(file);
 			await comicState.setPanelBgImage(panelIndex, previewUrl);
 			previewLoaded = true;
 		} catch (err) {
 			console.warn('preview blob failed to load — will fall back to signed URL', err);
+			try {
+				URL.revokeObjectURL(previewUrl);
+			} catch {
+				/* ignore */
+			}
 		}
 
 		try {
@@ -456,7 +459,7 @@
 	<input
 		bind:this={fileInput}
 		type="file"
-		accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml"
+		accept="image/jpeg,image/png,image/webp,image/gif"
 		onchange={handleFileSelect}
 		style="display: none;"
 	/>

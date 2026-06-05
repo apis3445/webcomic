@@ -126,13 +126,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 	const detected = detectImageMime(uint8);
-	const mime = detected || file.type || '';
-	if (!mime || !ALLOWED.has(mime)) {
+	if (!detected || !ALLOWED.has(detected)) {
 		return new Response(
 			JSON.stringify({ error: 'Only image files are allowed (jpg, png, webp, gif).' }),
 			{ status: 400 }
 		);
 	}
+	const mime = detected;
 
 	// Upload to storage with explicit content type
 	const filename = `${Date.now()}-${file.name}`;
