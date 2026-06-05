@@ -24,7 +24,7 @@
 </script>
 
 <svelte:head>
-	<title>Sign In — WebComic</title>
+	<title>Sign In — Zinemash</title>
 </svelte:head>
 
 <div class="page">

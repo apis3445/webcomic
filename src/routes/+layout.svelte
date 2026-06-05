@@ -19,7 +19,7 @@
 </script>
 
 <svelte:head>
-	<title>WebComic</title>
+	<title>Zinemash - mash your pages into a zine</title>
 	<link rel="preconnect" href="https://fonts.googleapis.com" />
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 	<link

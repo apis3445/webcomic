@@ -9,6 +9,7 @@
 	let { user }: Props = $props();
 
 	let menuOpen = $state(false);
+	let mobileNavOpen = $state(false);
 
 	const displayName = $derived(
 		(user?.user_metadata?.full_name as string | undefined) ||
@@ -22,6 +23,14 @@
 
 	function closeMenu() {
 		menuOpen = false;
+	}
+
+	function toggleMobileNav() {
+		mobileNavOpen = !mobileNavOpen;
+	}
+
+	function closeMobileNav() {
+		mobileNavOpen = false;
 	}
 
 	const closeOnOutside: Attachment<HTMLElement> = (node) => {
@@ -46,21 +55,40 @@
 
 <header class="navbar">
 	<div class="navbar-inner">
-		<a href={resolve('/')} class="logo">
-			<span class="logo-text">WebComic</span>
+		<a href={resolve('/')} class="logo" aria-label="zinemash home">
+			<span class="z-mark" aria-hidden="true">
+				<span class="z-block z-top"></span>
+				<span class="z-block z-diag"></span>
+				<span class="z-block z-bottom"></span>
+			</span>
+			<span class="logo-text">
+				<span class="logo-zine">zine</span><span class="logo-mash">mash</span>
+			</span>
 		</a>
 
-		<nav class="nav-links">
+		<nav id="mobile-nav" class="nav-links" class:open={mobileNavOpen}>
 			{#if user}
-				<a href={resolve('/#features')} class="nav-link">How it works</a>
-				<a href={resolve('/browse')} class="nav-link">Browse Comics</a>
-				<a href={resolve('/comics')} class="nav-link">My Comics</a>
-				<a href={resolve('/comic')} class="nav-link">New Comic</a>
+				<a href={resolve('/comics')} class="nav-link" onclick={closeMobileNav}>My Comics</a>
+				<a href={resolve('/comic')} class="nav-link" onclick={closeMobileNav}>New Comic</a>
 			{:else}
-				<a href={resolve('/#features')} class="nav-link">How it works</a>
-				<a href={resolve('/browse')} class="nav-link">Browse Comics</a>
+				<a href={resolve('/#features')} class="nav-link" onclick={closeMobileNav}>How it works</a>
+				<a href={resolve('/comic')} class="nav-link" onclick={closeMobileNav}>Editor</a>
 			{/if}
 		</nav>
+
+		<button
+			type="button"
+			class="hamburger"
+			class:open={mobileNavOpen}
+			onclick={toggleMobileNav}
+			aria-label="Toggle navigation menu"
+			aria-expanded={mobileNavOpen}
+			aria-controls="mobile-nav"
+		>
+			<span class="hamburger-bar"></span>
+			<span class="hamburger-bar"></span>
+			<span class="hamburger-bar"></span>
+		</button>
 
 		<div class="nav-actions">
 			{#if user}
@@ -185,19 +213,19 @@
 	}
 
 	.navbar-inner {
+		max-width: 1200px;
 		margin: 0 auto;
 		padding: 0 1.5rem;
 		height: 64px;
 		display: flex;
 		align-items: center;
 		gap: 2rem;
-		font-family: 'Comic Neue', sans-serif;
 	}
 
 	.logo {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.65rem;
 		text-decoration: none;
 		flex-shrink: 0;
 		transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
@@ -207,13 +235,67 @@
 		transform: scale(1.05) rotate(-2deg);
 	}
 
+	/* Z mark: three independent blocks stacked like collaged photos */
+	.z-mark {
+		position: relative;
+		display: inline-block;
+		width: 38px;
+		height: 38px;
+		flex-shrink: 0;
+	}
+
+	.z-block {
+		position: absolute;
+		border: 2px solid #000;
+		box-shadow: 4px 4px 0 #000;
+	}
+
+	.z-top {
+		top: 0;
+		left: 0;
+		width: 32px;
+		height: 10px;
+		background: #facc15; /* bright yellow */
+		transform: rotate(-4deg);
+		z-index: 3;
+	}
+
+	.z-diag {
+		top: 14px;
+		left: 4px;
+		width: 30px;
+		height: 10px;
+		background: #06b6d4; /* electric cyan */
+		transform: rotate(-45deg);
+		transform-origin: center;
+		z-index: 2;
+	}
+
+	.z-bottom {
+		bottom: 0;
+		right: 0;
+		width: 32px;
+		height: 10px;
+		background: #ffffff;
+		transform: rotate(3deg);
+		z-index: 1;
+	}
+
 	.logo-text {
-		font-family: 'Comic Neue', sans-serif;
-		font-size: 1.8rem;
-		font-weight: 700;
-		letter-spacing: 0.04em;
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 1.65rem;
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		line-height: 1;
+		text-transform: lowercase;
+	}
+
+	.logo-zine {
 		color: #ffffff;
-		text-shadow: 2px 2px 0 rgba(26, 35, 126, 0.6);
+	}
+
+	.logo-mash {
+		color: #06b6d4;
 	}
 
 	.nav-links {
@@ -224,10 +306,10 @@
 	}
 
 	.nav-link {
-		padding: 0.5rem;
+		padding: 0.5rem 1rem;
 		color: rgba(255, 255, 255, 0.85);
 		text-decoration: none;
-		font-size: 1.1rem;
+		font-size: 0.92rem;
 		font-weight: 600;
 		border-radius: 8px;
 		transition:
@@ -247,6 +329,53 @@
 		align-items: center;
 		gap: 0.6rem;
 		flex-shrink: 0;
+	}
+
+	.hamburger {
+		display: none;
+		flex-direction: column;
+		justify-content: center;
+		align-items: center;
+		gap: 4px;
+		width: 40px;
+		height: 40px;
+		background: rgba(255, 255, 255, 0.05);
+		border: 2px solid rgba(255, 255, 255, 0.25);
+		border-radius: 8px;
+		cursor: pointer;
+		padding: 0;
+		transition:
+			background 0.15s,
+			border-color 0.15s;
+	}
+
+	.hamburger:hover,
+	.hamburger[aria-expanded='true'] {
+		background: rgba(255, 255, 255, 0.15);
+		border-color: #ffffff;
+	}
+
+	.hamburger-bar {
+		display: block;
+		width: 20px;
+		height: 2px;
+		background: #ffffff;
+		border-radius: 2px;
+		transition:
+			transform 0.2s ease,
+			opacity 0.15s ease;
+	}
+
+	.hamburger.open .hamburger-bar:nth-child(1) {
+		transform: translateY(6px) rotate(45deg);
+	}
+
+	.hamburger.open .hamburger-bar:nth-child(2) {
+		opacity: 0;
+	}
+
+	.hamburger.open .hamburger-bar:nth-child(3) {
+		transform: translateY(-6px) rotate(-45deg);
 	}
 
 	/* Logged-in dropdown */
@@ -382,12 +511,55 @@
 	}
 
 	@media (max-width: 640px) {
+		.navbar-inner {
+			gap: 0.75rem;
+			padding: 0 1rem;
+		}
+
+		.hamburger {
+			display: flex;
+			order: 3;
+		}
+
+		.nav-actions {
+			margin-left: auto;
+		}
+
 		.nav-links {
-			display: none;
+			position: absolute;
+			top: 64px;
+			left: 0;
+			right: 0;
+			flex-direction: column;
+			align-items: stretch;
+			gap: 0.25rem;
+			padding: 1rem;
+			background: #3f51b5;
+			border-bottom: 2.5px solid rgba(255, 255, 255, 0.15);
+			box-shadow: 0 8px 16px rgba(0, 0, 0, 0.18);
+			transform: translateY(-110%);
+			opacity: 0;
+			pointer-events: none;
+			transition:
+				transform 0.2s ease,
+				opacity 0.15s ease;
+			z-index: 90;
+		}
+
+		.nav-links.open {
+			transform: translateY(0);
+			opacity: 1;
+			pointer-events: auto;
+		}
+
+		.nav-link {
+			font-size: 1rem;
+			padding: 0.75rem 1rem;
 		}
 
 		.user-name-text {
 			max-width: 90px;
 		}
 	}
+
 </style>

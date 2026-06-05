@@ -3,7 +3,7 @@
 </script>
 
 <svelte:head>
-	<title>WebComic — Create your comic</title>
+	<title>Zinemash — Create your comic</title>
 	<meta name="description" content="Create your comic with templates and bubbles!" />
 </svelte:head>
 
