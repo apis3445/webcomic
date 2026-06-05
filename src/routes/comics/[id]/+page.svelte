@@ -138,79 +138,76 @@
 									{@const bw = b.w || b.width || 120}
 									{@const bh = b.h || b.height || 24}
 									{@const btype = b.style || 'left-oval'}
+									{@const isCloud = btype === 'left-cloud' || btype === 'right-cloud'}
+									{@const isOval = btype === 'left-oval' || btype === 'right-oval'}
+									{@const padH = isCloud ? 32 : isOval ? 16 : 6}
+									{@const padV = isCloud ? 14 : 6}
 									<div
 										class="bubble-overlay"
-										class:bubble-cloud={btype === 'left-cloud' || btype === 'right-cloud'}
-										class:bubble-oval={btype === 'left-oval' || btype === 'right-oval'}
+										class:bubble-cloud={isCloud}
+										class:bubble-oval={isOval}
 										style={getBubbleStyle(b, stageW, stageH)}
 									>
-										{#if btype === 'left-cloud' || btype === 'right-cloud'}
-											<svg
-												class="bubble-svg"
-												viewBox="0 0 {bw} {bh + 20}"
-												width="100%"
-												height="100%"
-												xmlns="http://www.w3.org/2000/svg"
-											>
-												<path
-													d={getBubblePath(btype, bw, bh)}
+										<svg
+											class="bubble-svg"
+											viewBox="0 0 {bw} {bh}"
+											width="100%"
+											height="100%"
+											xmlns="http://www.w3.org/2000/svg"
+										>
+											<path
+												d={getBubblePath(btype, bw, bh)}
+												fill="white"
+												stroke="black"
+												stroke-width="3"
+											/>
+											{#if btype === 'left-cloud'}
+												<circle
+													cx={bw * 0.2}
+													cy={bh + 6}
+													r="6"
 													fill="white"
 													stroke="black"
-													stroke-width="3"
+													stroke-width="2"
 												/>
-												{#if btype === 'left-cloud'}
-													<circle
-														cx={bw * 0.2}
-														cy={bh + 6}
-														r="6"
-														fill="white"
-														stroke="black"
-														stroke-width="2"
-													/>
-													<circle
-														cx={bw * 0.1}
-														cy={bh + 16}
-														r="3.5"
-														fill="white"
-														stroke="black"
-														stroke-width="1.5"
-													/>
-												{:else}
-													<circle
-														cx={bw * 0.8}
-														cy={bh + 6}
-														r="6"
-														fill="white"
-														stroke="black"
-														stroke-width="2"
-													/>
-													<circle
-														cx={bw * 0.9}
-														cy={bh + 16}
-														r="3.5"
-														fill="white"
-														stroke="black"
-														stroke-width="1.5"
-													/>
-												{/if}
-											</svg>
-										{:else}
-											<svg
-												class="bubble-svg"
-												viewBox="0 0 {bw} {bh + 15}"
-												width="100%"
-												height="100%"
-												xmlns="http://www.w3.org/2000/svg"
-											>
-												<path
-													d={getBubblePath(btype, bw, bh)}
+												<circle
+													cx={bw * 0.1}
+													cy={bh + 16}
+													r="3.5"
 													fill="white"
 													stroke="black"
-													stroke-width="3"
+													stroke-width="1.5"
 												/>
-											</svg>
-										{/if}
-										<span class="bubble-text-label">{b.text}</span>
+											{:else if btype === 'right-cloud'}
+												<circle
+													cx={bw * 0.8}
+													cy={bh + 6}
+													r="6"
+													fill="white"
+													stroke="black"
+													stroke-width="2"
+												/>
+												<circle
+													cx={bw * 0.9}
+													cy={bh + 16}
+													r="3.5"
+													fill="white"
+													stroke="black"
+													stroke-width="1.5"
+												/>
+											{/if}
+											<foreignObject
+												x={padH}
+												y={padV}
+												width={Math.max(bw - padH * 2, 1)}
+												height={Math.max(bh - padV * 2, 1)}
+											>
+												<div
+													xmlns="http://www.w3.org/1999/xhtml"
+													class="bubble-text-svg"
+												>{b.text}</div>
+											</foreignObject>
+										</svg>
 									</div>
 								{:else}
 									<div class="bubble-list-static">{b.text}</div>
@@ -285,9 +282,7 @@
 	.bubble-overlay {
 		position: absolute;
 		pointer-events: none;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		overflow: visible;
 		z-index: 10;
 	}
 	.bubble-svg {
@@ -297,23 +292,23 @@
 		height: 100%;
 		overflow: visible;
 	}
-	.bubble-text-label {
-		position: relative;
-		z-index: 1;
-		font-family: 'Comic Neue', 'Comic Sans MS', cursive;
+	/* HTML inside <foreignObject>: CSS lengths are interpreted in viewBox units,
+	 * so font-size: 15 here matches the editor's Konva fontSize={15} and scales
+	 * automatically with the rendered bubble size. */
+	.bubble-text-svg {
+		width: 100%;
+		height: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 		font-weight: 700;
-		font-size: 0.8em;
+		font-size: 15px;
+		line-height: 1.1;
 		text-align: center;
-		padding: 4px 6px;
-		line-height: 1.2;
-		word-break: break-word;
 		color: #000;
-	}
-	.bubble-cloud .bubble-text-label {
-		padding: 14px 32px;
-	}
-	.bubble-oval .bubble-text-label {
-		padding: 6px 16px;
+		word-break: break-word;
+		overflow: hidden;
 	}
 	/* page template adjustments similar to editor */
 	.published-grid.template-page {
