@@ -155,12 +155,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return new Response(JSON.stringify({ error: upErr.message }), { status: 500 });
 	}
 
-	// Get a signed URL for private bucket access (expires in 1 hour)
+	// Get a signed URL for private bucket access (expires in 24 hours)
 	const bucketName = 'comics';
 	const publicPathForUrl = relativePath;
 	const { data: urlData, error: urlErr } = await locals.supabase.storage
 		.from(bucketName)
-		.createSignedUrl(publicPathForUrl as string, 60 * 60);
+		.createSignedUrl(publicPathForUrl as string, 60 * 60 * 24);
 	if (urlErr) console.error('createSignedUrl error', urlErr);
 	const publicUrl = (urlData as any)?.signedUrl ?? '';
 

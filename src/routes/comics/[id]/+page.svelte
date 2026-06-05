@@ -2,31 +2,29 @@
 	/* eslint-disable @typescript-eslint/no-explicit-any */
 	import Navbar from '$lib/components/Navbar.svelte';
 	import Footer from '$lib/components/Footer.svelte';
-	import { untrack } from 'svelte';
-	const { data } = $props();
-	const {
-		comic,
-		panels: orderedPanels,
-		templateSlug,
-		user
-	} = untrack(
-		() =>
-			data as {
-				comic: any;
-				panels: any[];
-				sheets?: any[];
-				templateSlug?: string | null;
-				user: any;
-			}
-	);
 
-	const panels = orderedPanels || [];
+	type PageProps = {
+		comic: any;
+		panels: any[];
+		sheets?: any[];
+		templateSlug?: string | null;
+		user: any;
+	};
 
-	const templateId: string = (() => {
+	const { data }: { data: PageProps } = $props();
+
+	// Read reactively via $derived so future invalidations re-render the page
+	// instead of being silently dropped (was wrapped in untrack() before).
+	const comic = $derived(data.comic);
+	const templateSlug = $derived(data.templateSlug ?? null);
+	const user = $derived(data.user);
+	const panels = $derived(data.panels ?? []);
+
+	const templateId = $derived.by<string>(() => {
 		if (templateSlug === 'grid-3x3' || templateSlug === 'page-1-2-3') return templateSlug;
 		if (panels.length === 6) return 'page-1-2-3';
 		return 'grid-3x3';
-	})();
+	});
 
 	// Percentage-based positioning: coords are in Konva stage pixels, so divide by stage dimensions.
 	function getBubbleStyle(b: any, stageW: number, stageH: number) {
@@ -120,19 +118,28 @@
 			{@const stageW = (item.panel?.w > 0 ? item.panel.w : null) ?? item.image?.width ?? 0}
 			{@const stageH = (item.panel?.h > 0 ? item.panel.h : null) ?? item.image?.height ?? 0}
 			{@const hasStageDims = item.panel?.w > 0 && item.panel?.h > 0}
-			<div class="published-cell">
-				{#if item.image?.public_url}
+			{@const hasImage = Boolean(item.image?.public_url)}
+			{@const hasBubbles = Boolean(item.bubbles?.length)}
+			<!-- Skip the cell entirely when a panel has no content: a published
+			     comic that renders empty dashed placeholders looks broken to
+			     readers (and the dashed box is shorter than image panels, so
+			     the grid also looks ragged). Empty slots simply vanish. -->
+			{#if hasImage || hasBubbles}
+				<div class="published-cell">
 					<div
 						class="panel-image-wrap"
+						class:panel-image-wrap-empty={!hasImage}
 						style={hasStageDims ? `aspect-ratio: ${item.panel.w} / ${item.panel.h}` : ''}
 					>
-						<img
-							src={item.image.public_url}
-							alt={item.image.filename || 'Panel image'}
-							loading="lazy"
-							class:cover={hasStageDims}
-						/>
-						{#if item.bubbles?.length}
+						{#if hasImage}
+							<img
+								src={item.image.public_url}
+								alt={item.image.filename || 'Panel image'}
+								loading="lazy"
+								class:cover={hasStageDims}
+							/>
+						{/if}
+						{#if hasBubbles}
 							{#each item.bubbles as b (b.id)}
 								{#if typeof b.x === 'number' && typeof b.y === 'number' && stageW && stageH}
 									{@const bw = b.w || b.width || 120}
@@ -215,10 +222,8 @@
 							{/each}
 						{/if}
 					</div>
-				{:else}
-					<div class="panel-empty"></div>
-				{/if}
-			</div>
+				</div>
+			{/if}
 		{/each}
 	</section>
 </main>
@@ -249,6 +254,14 @@
 		aspect-ratio: 4 / 3;
 		background: #f3f4f6;
 		border: 2px dashed #d1d5db;
+		border-radius: 8px;
+	}
+	/* Panel with bubbles but no image — give the wrap a paper-like backdrop
+	   so the bubbles have a surface to sit on instead of floating in 0×0. */
+	.panel-image-wrap-empty {
+		aspect-ratio: 4 / 3;
+		background: #ffffff;
+		border: 2px solid #1a237e;
 		border-radius: 8px;
 	}
 	.published-cell img {

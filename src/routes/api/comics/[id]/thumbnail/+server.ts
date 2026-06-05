@@ -1,5 +1,29 @@
+import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+function newReqId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
+
+function thumbnailErrorResponse(
+	reqId: string,
+	stage: string,
+	error: unknown,
+	status = 500
+): Response {
+	const err = (error ?? {}) as { message?: string; code?: string; name?: string; status?: number };
+	console.error('[thumbnail]', reqId, stage, {
+		status: err.status,
+		code: err.code,
+		name: err.name,
+		...(dev ? { message: err.message } : {})
+	});
+	return new Response(
+		JSON.stringify({ error: 'Could not save thumbnail. Please try again.', reqId }),
+		{ status }
+	);
+}
 
 function detectImageMime(bytes: Uint8Array): string | null {
 	if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)
@@ -16,6 +40,7 @@ function detectImageMime(bytes: Uint8Array): string | null {
 const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']);
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
+	const reqId = newReqId();
 	const comicId = params.id;
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
@@ -56,15 +81,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const { error: upErr } = await locals.supabase.storage
 		.from('comics')
 		.upload(storagePath, uint8, { upsert: true, contentType: mime });
-	if (upErr)
-		return new Response(JSON.stringify({ error: upErr.message }), { status: 500 });
+	if (upErr) return thumbnailErrorResponse(reqId, 'storage_upload', upErr);
 
 	const { error: updErr } = await locals.supabase
 		.from('comics')
 		.update({ thumbnail_path: storagePath })
 		.eq('id', comicId);
-	if (updErr)
-		return new Response(JSON.stringify({ error: updErr.message }), { status: 500 });
+	if (updErr) return thumbnailErrorResponse(reqId, 'row_update', updErr);
 
 	const { data: urlData } = await locals.supabase.storage
 		.from('comics')

@@ -39,6 +39,9 @@ export interface Bubble {
 	height: number;
 	text: string;
 	type: BubbleType;
+	// Higher z_index renders on top of lower ones. Persisted server-side
+	// so overlapping bubbles keep a stable, user-controllable order.
+	z_index: number;
 }
 
 export interface PanelState {
@@ -116,6 +119,7 @@ class ComicState {
 		if (!panel) return;
 
 		const nextId = panel.bubbles.reduce((max, b) => Math.max(max, b.id), 0) + 1;
+		const topZ = panel.bubbles.reduce((max, b) => Math.max(max, b.z_index ?? 0), 0);
 		const newBubble: Bubble = {
 			id: nextId,
 			x: 80,
@@ -123,7 +127,8 @@ class ComicState {
 			width: type === 'burst' ? 160 : 140,
 			height: type === 'burst' ? 130 : 50,
 			text,
-			type
+			type,
+			z_index: topZ + 1
 		};
 
 		// Resize to fit text when running in the browser
@@ -133,6 +138,29 @@ class ComicState {
 
 		panel.bubbles = [...panel.bubbles, newBubble];
 		this.activeBubbleId = nextId;
+	}
+
+	bringActiveBubbleToFront() {
+		const panel = this.activePanel;
+		const bubble = this.activeBubble;
+		if (!panel || !bubble) return;
+		const topZ = panel.bubbles.reduce((max, b) => Math.max(max, b.z_index ?? 0), 0);
+		if (bubble.z_index === topZ) return;
+		bubble.z_index = topZ + 1;
+		panel.bubbles = [...panel.bubbles];
+	}
+
+	sendActiveBubbleToBack() {
+		const panel = this.activePanel;
+		const bubble = this.activeBubble;
+		if (!panel || !bubble) return;
+		const bottomZ = panel.bubbles.reduce(
+			(min, b) => Math.min(min, b.z_index ?? 0),
+			bubble.z_index
+		);
+		if (bubble.z_index === bottomZ) return;
+		bubble.z_index = bottomZ - 1;
+		panel.bubbles = [...panel.bubbles];
 	}
 
 	deleteBubble(id: number) {
@@ -201,24 +229,48 @@ class ComicState {
 		return { width, height };
 	}
 
-	setPanelBgImage(index: number, url: string) {
+	setPanelBgImage(index: number, url: string): Promise<void> {
 		const panel = this.panels[index];
-		if (!panel) return;
+		if (!panel) return Promise.reject(new Error('panel not found'));
 
 		if (!browser) {
 			panel.bgImageUrl = url;
-			return;
+			return Promise.resolve();
 		}
 
-		const img = new window.Image();
-		img.crossOrigin = 'Anonymous';
-		img.onload = () => {
-			panel.bgImage = img;
-			panel.bgImageUrl = url;
-			// Force reactive refresh
-			this.panels = [...this.panels];
-		};
-		img.src = url;
+		// Capture the URL we're about to replace so we can revoke it after the
+		// new image has decoded — if it was a blob: URL, releasing the previous
+		// one avoids unbounded growth across repeat uploads in the same session.
+		const previousUrl = panel.bgImageUrl;
+
+		return new Promise<void>((resolve, reject) => {
+			const img = new window.Image();
+			// Intentionally not setting img.crossOrigin = 'Anonymous'. CORS is only
+			// required if we ever read pixel data via canvas.toDataURL/getImageData
+			// (we don't — Konva just displays). Forcing CORS would trip a preflight
+			// and silently fail on storage URLs lacking strict CORS headers.
+			img.onload = () => {
+				panel.bgImage = img;
+				panel.bgImageUrl = url;
+				// Force reactive refresh
+				this.panels = [...this.panels];
+				resolve();
+				// Release the previous blob URL (if any) once we've safely
+				// swapped to the new image. http(s) URLs are untouched.
+				if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) {
+					try {
+						URL.revokeObjectURL(previousUrl);
+					} catch {
+						/* ignore */
+					}
+				}
+			};
+			img.onerror = () => {
+				console.error('setPanelBgImage: image failed to load', { index, url });
+				reject(new Error('Image failed to load'));
+			};
+			img.src = url;
+		});
 	}
 
 	get hasContent(): boolean {
@@ -279,9 +331,16 @@ class ComicState {
 		for (const pData of payload.panels) {
 			const idx = (pData.index ?? 1) - 1;
 			if (idx < 0 || idx >= this.panels.length) continue;
-			this.panels[idx].bubbles = pData.bubbles;
+			// Fill in z_index defaults for legacy rows that pre-date the field
+			// (those persisted with z_index=0 across the board).
+			this.panels[idx].bubbles = pData.bubbles.map((b, i) => ({
+				...b,
+				z_index: typeof b.z_index === 'number' ? b.z_index : i
+			}));
 			if (pData.imageUrl) {
-				this.setPanelBgImage(idx, pData.imageUrl);
+				this.setPanelBgImage(idx, pData.imageUrl).catch((err) => {
+					console.warn('hydrate: panel image failed to load', { idx, err });
+				});
 			}
 		}
 		this.activePanelIndex = 0;
@@ -304,7 +363,9 @@ class ComicState {
 					if (this.panels[idx]) {
 						this.panels[idx].bubbles = pData.bubbles || [];
 						if (pData.bgImageUrl) {
-							this.setPanelBgImage(idx, pData.bgImageUrl);
+							this.setPanelBgImage(idx, pData.bgImageUrl).catch((err) => {
+								console.warn('importJSON: panel image failed to load', { idx, err });
+							});
 						} else {
 							this.panels[idx].bgImage = undefined;
 							this.panels[idx].bgImageUrl = '';

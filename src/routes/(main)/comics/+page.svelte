@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { comicState } from '$lib/comicState.svelte';
 	import type { PageData } from './$types';
 
@@ -15,22 +14,40 @@
 	}
 
 	const { data }: { data: PageData } = $props();
-	let comics = $state<ComicSummary[]>(untrack(() => data.comics as ComicSummary[]) ?? []);
+	// Read reactively so navigation back to this page (or `invalidateAll()`
+	// after a delete) reflects the latest server state instead of a stale
+	// snapshot. The previous local mutation pattern lost reactivity for any
+	// state change other than delete.
+	const comics = $derived<ComicSummary[]>((data.comics as ComicSummary[]) ?? []);
+
+	let deleteError = $state<string | null>(null);
+	let deletingId = $state<string | null>(null);
 
 	async function deleteComic(c: ComicSummary) {
 		if (!confirm(`Delete "${c.name}"? This cannot be undone.`)) return;
+		deleteError = null;
+		deletingId = c.id;
 		try {
 			const res = await fetch(`/api/comics/${c.id}`, { method: 'DELETE' });
 			if (!res.ok) {
 				const body = await res.json().catch(() => null);
-				alert(body?.error ?? 'Delete failed');
+				deleteError = body?.error ?? 'Could not delete comic. Please try again.';
 				return;
 			}
-			comics = comics.filter((x) => x.id !== c.id);
+			// Re-fetch the comics list from the server instead of trying to
+			// patch local state — guarantees the UI matches the DB even if
+			// background changes happened.
+			await invalidateAll();
 		} catch (e) {
 			console.error('delete error', e);
-			alert('Delete failed');
+			deleteError = 'Network error. Please check your connection and try again.';
+		} finally {
+			deletingId = null;
 		}
+	}
+
+	function dismissDeleteError() {
+		deleteError = null;
 	}
 
 	function editComic(c: ComicSummary) {
@@ -56,6 +73,18 @@
 		<h1>My Comics</h1>
 		<button class="create-button" onclick={createNewComic}>+ New Comic</button>
 	</div>
+
+	{#if deleteError}
+		<div class="delete-error" role="alert" aria-live="assertive">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<circle cx="12" cy="12" r="10" />
+				<line x1="12" y1="8" x2="12" y2="12" />
+				<line x1="12" y1="16" x2="12.01" y2="16" />
+			</svg>
+			<span>{deleteError}</span>
+			<button type="button" class="delete-error-close" onclick={dismissDeleteError} aria-label="Dismiss">×</button>
+		</div>
+	{/if}
 
 	{#if comics.length === 0}
 		<div class="empty-state">
@@ -103,7 +132,13 @@
 							rel="noopener"
 							class="action-btn action-view">View</a
 						>
-						<button class="action-btn action-delete" onclick={() => deleteComic(c)}>Delete</button>
+						<button
+							class="action-btn action-delete"
+							onclick={() => deleteComic(c)}
+							disabled={deletingId === c.id}
+						>
+							{deletingId === c.id ? 'Deleting…' : 'Delete'}
+						</button>
 					</div>
 				</div>
 			{/each}
@@ -130,6 +165,53 @@
 		font-weight: 800;
 		color: #0f172a;
 		margin: 0;
+	}
+
+	.delete-error {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+		padding: 0.75rem 0.9rem;
+		margin-bottom: 1rem;
+		background: #fee2e2;
+		color: #991b1b;
+		border: 2.5px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 3px 3px 0 #3f51b5;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		font-weight: 700;
+		line-height: 1.35;
+	}
+
+	.delete-error svg {
+		width: 20px;
+		height: 20px;
+		flex-shrink: 0;
+		color: #991b1b;
+		margin-top: 1px;
+	}
+
+	.delete-error span {
+		flex: 1;
+		min-width: 0;
+		word-break: break-word;
+	}
+
+	.delete-error-close {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		color: #991b1b;
+		font-size: 1.4rem;
+		font-weight: 800;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 0.25rem;
+	}
+
+	.delete-error-close:hover {
+		color: #1a237e;
 	}
 
 	.create-button {

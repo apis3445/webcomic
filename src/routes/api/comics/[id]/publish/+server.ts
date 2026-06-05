@@ -1,7 +1,36 @@
+import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+function newReqId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
+
+// Log a structured publish error (safe in prod) and return a generic 500 to the client.
+// Detailed Supabase fields only included in dev to avoid leaking schema/Postgres
+// constraint names through log aggregators.
+function publishErrorResponse(
+	reqId: string,
+	stage: string,
+	error: unknown,
+	status = 500,
+	extra: Record<string, unknown> = {}
+): Response {
+	const err = (error ?? {}) as { message?: string; code?: string; name?: string; status?: number };
+	console.error('[publish]', reqId, stage, {
+		status: err.status,
+		code: err.code,
+		name: err.name,
+		...(dev ? { message: err.message } : {})
+	});
+	return new Response(
+		JSON.stringify({ error: 'Could not publish your comic. Please try again.', reqId, ...extra }),
+		{ status }
+	);
+}
+
 export const POST: RequestHandler = async ({ params, locals, request }) => {
+	const reqId = newReqId();
 	const comicId = params.id;
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
@@ -165,7 +194,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 						continue;
 					}
 					if (Array.isArray(p.bubbles) && p.bubbles.length) {
-						const toInsert = p.bubbles.map((b: any) => ({
+						const toInsert = p.bubbles.map((b: any, bi: number) => ({
 							panel_id: panelId,
 							sheet_id: sheetId,
 							author_id: userId,
@@ -174,7 +203,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							y: b.y,
 							w: b.width ?? b.w,
 							h: b.height ?? b.h,
-							z_index: b.z_index ?? 0,
+							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
 						const { error: bubbleInsErr } = await locals.supabase
@@ -190,20 +219,27 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		}
 	}
 
-	// Fetch images for comic
+	// Fetch images for comic. Include public_url so we can skip ones already
+	// pushed to the public bucket (idempotent retries).
 	const { data: images, error: imagesErr } = await locals.supabase
 		.from('images')
-		.select('id, storage_path, bucket, filename')
+		.select('id, storage_path, bucket, filename, mime, public_url')
 		.eq('comic_id', comicId);
 	if (imagesErr) {
-		console.error('images select error', imagesErr);
-		return new Response(JSON.stringify({ error: imagesErr.message }), { status: 500 });
+		return publishErrorResponse(reqId, 'images_select', imagesErr);
 	}
 
 	const publicBucket = 'public-comics';
-	const results: Array<{ id: string; public_url?: string; error?: string }> = [];
+	const results: Array<{ id: string; public_url?: string; failed?: true }> = [];
+	let failedCount = 0;
 
 	for (const img of images as any[]) {
+		// Idempotency: if this image was already published in a previous
+		// (partially-successful) run, reuse the existing public_url.
+		if (img.public_url) {
+			results.push({ id: img.id, public_url: img.public_url });
+			continue;
+		}
 		try {
 			let path = img.storage_path;
 			const bucket = img.bucket || 'comics';
@@ -218,8 +254,15 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.from(bucket)
 				.download(path);
 			if (dlErr || !downloaded) {
-				console.error('download error', dlErr);
-				results.push({ id: img.id, error: dlErr?.message ?? 'download failed' });
+				const e = (dlErr ?? {}) as { message?: string; status?: number; name?: string };
+				console.error('[publish]', reqId, 'image_download', {
+					image_id: img.id,
+					status: e.status,
+					name: e.name,
+					...(dev ? { message: e.message } : {})
+				});
+				results.push({ id: img.id, failed: true });
+				failedCount++;
 				continue;
 			}
 
@@ -279,8 +322,15 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.from(publicBucket)
 				.upload(publicRelativePath, bytes, { upsert: true, contentType });
 			if (upErr) {
-				console.error('upload public error', upErr);
-				results.push({ id: img.id, error: upErr.message });
+				const e = upErr as { message?: string; status?: number; name?: string };
+				console.error('[publish]', reqId, 'image_upload_public', {
+					image_id: img.id,
+					status: e.status,
+					name: e.name,
+					...(dev ? { message: e.message } : {})
+				});
+				results.push({ id: img.id, failed: true });
+				failedCount++;
 				continue;
 			}
 
@@ -295,16 +345,47 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.update({ public_url: publicUrl })
 				.eq('id', img.id);
 			if (updErr) {
-				console.error('update image public_url error', updErr);
-				results.push({ id: img.id, error: updErr.message });
+				const e = updErr as { message?: string; status?: number; name?: string };
+				console.error('[publish]', reqId, 'image_url_save', {
+					image_id: img.id,
+					status: e.status,
+					name: e.name,
+					...(dev ? { message: e.message } : {})
+				});
+				results.push({ id: img.id, failed: true });
+				failedCount++;
 				continue;
 			}
 
 			results.push({ id: img.id, public_url: publicUrl });
 		} catch (e: any) {
-			console.error('publish loop error', e);
-			results.push({ id: img.id, error: e?.message ?? 'unknown' });
+			console.error('[publish]', reqId, 'image_loop_unexpected', {
+				image_id: img.id,
+				...(dev ? { message: e?.message } : {})
+			});
+			results.push({ id: img.id, failed: true });
+			failedCount++;
 		}
+	}
+
+	// Refuse to flip is_public if any image failed — half-published comics
+	// render empty panels on the public viewer. Successful images already have
+	// their public_url persisted, so a client retry is cheap (idempotent loop
+	// above skips them).
+	if (failedCount > 0) {
+		console.error('[publish]', reqId, 'partial_failure', {
+			total: (images as any[]).length,
+			failed: failedCount
+		});
+		return new Response(
+			JSON.stringify({
+				error: `Some images could not be published (${failedCount} of ${(images as any[]).length}). Please try again.`,
+				reqId,
+				failedCount,
+				totalCount: (images as any[]).length
+			}),
+			{ status: 502 }
+		);
 	}
 
 	// Set comic is_public = true
@@ -313,8 +394,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		.update({ is_public: true })
 		.eq('id', comicId);
 	if (publishErr) {
-		console.error('failed to set comic public', publishErr);
-		return new Response(JSON.stringify({ error: publishErr.message, results }), { status: 500 });
+		return publishErrorResponse(reqId, 'set_public', publishErr);
 	}
 
 	// Also return a canonical path for the published comic page

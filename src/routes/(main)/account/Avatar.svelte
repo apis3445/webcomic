@@ -11,39 +11,101 @@
 
 	let avatarUrl: string | null = $state(null);
 	let uploading = $state(false);
+	let uploadError = $state<string | null>(null);
 	let files: FileList | undefined = $state();
+
+	const ALLOWED_MIME = new Set([
+		'image/jpeg',
+		'image/png',
+		'image/webp',
+		'image/gif',
+		'image/svg+xml'
+	]);
+	const MAX_BYTES = 4 * 1024 * 1024; // 4 MiB upper bound for avatars
+
+	function extFromMime(mime: string): string {
+		const part = mime.split('/')[1] ?? '';
+		return part.replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+	}
+
+	function revokeAvatarUrl() {
+		if (avatarUrl && avatarUrl.startsWith('blob:')) {
+			URL.revokeObjectURL(avatarUrl);
+		}
+		avatarUrl = null;
+	}
 
 	const downloadImage = async (path: string) => {
 		try {
 			const { data, error } = await supabase.storage.from('avatars').download(path);
 			if (error) throw error;
+			// Revoke the previous blob URL before allocating a new one to keep
+			// memory bounded across re-renders / repeat uploads.
+			revokeAvatarUrl();
 			avatarUrl = URL.createObjectURL(data);
 		} catch (error) {
-			if (error instanceof Error) {
-				console.log('Error downloading image: ', error.message);
-			}
+			console.error('Error downloading avatar', {
+				name: (error as { name?: string })?.name
+			});
 		}
 	};
 
 	const uploadAvatar = async () => {
+		uploadError = null;
 		try {
 			uploading = true;
 			if (!files || files.length === 0) {
-				throw new Error('You must select an image to upload.');
+				uploadError = 'Please pick an image to upload.';
+				return;
 			}
 			const file = files[0];
-			const fileExt = file.name.split('.').pop();
-			const filePath = `${Math.random()}.${fileExt}`;
-			const { error } = await supabase.storage.from('avatars').upload(filePath, file);
-			if (error) throw error;
-			url = filePath;
-			setTimeout(() => {
-				onupload?.();
-			}, 100);
-		} catch (error) {
-			if (error instanceof Error) {
-				alert(error.message);
+			if (!ALLOWED_MIME.has(file.type)) {
+				uploadError = 'Only image files are allowed (jpg, png, webp, gif, svg).';
+				return;
 			}
+			if (file.size > MAX_BYTES) {
+				uploadError = 'That image is too large. Please pick one under 4 MB.';
+				return;
+			}
+
+			// Resolve the current user so the storage path is scoped per-account.
+			// Lets bucket RLS keep `${userId}/...` private and avoids the global
+			// random-filename namespace collision risk of the old code.
+			const { data: userData, error: userErr } = await supabase.auth.getUser();
+			const userId = userData?.user?.id;
+			if (userErr || !userId) {
+				uploadError = 'You need to sign in to update your avatar.';
+				return;
+			}
+
+			const ext = extFromMime(file.type);
+			const rand =
+				typeof crypto !== 'undefined' && 'randomUUID' in crypto
+					? crypto.randomUUID()
+					: Math.random().toString(36).slice(2);
+			const filePath = `${userId}/${Date.now()}-${rand}.${ext}`;
+
+			const { error } = await supabase.storage
+				.from('avatars')
+				.upload(filePath, file, { contentType: file.type, upsert: false });
+			if (error) {
+				console.error('avatar upload error', { name: error.name });
+				uploadError = 'Could not upload avatar. Please try again.';
+				return;
+			}
+
+			// Best-effort cleanup of the previous avatar object so we don't
+			// accumulate orphaned files per user. Failure here is non-fatal.
+			if (url && url !== filePath) {
+				try {
+					await supabase.storage.from('avatars').remove([url]);
+				} catch {
+					/* ignore */
+				}
+			}
+
+			url = filePath;
+			onupload?.();
 		} finally {
 			uploading = false;
 		}
@@ -52,6 +114,10 @@
 	$effect(() => {
 		if (url) downloadImage(url);
 	});
+
+	// Revoke any in-memory blob URL when the component is destroyed so the
+	// allocated bitmap is released immediately instead of waiting for GC.
+	$effect(() => () => revokeAvatarUrl());
 </script>
 
 <div class="avatar-wrapper">
@@ -94,12 +160,25 @@
 	<input
 		type="file"
 		id="avatar-upload"
-		accept="image/*"
+		accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml"
 		bind:files
 		onchange={uploadAvatar}
 		disabled={uploading}
 		style="display: none;"
 	/>
+	{#if uploadError}
+		<div class="avatar-error" role="alert" aria-live="assertive">
+			{uploadError}
+			<button
+				type="button"
+				class="avatar-error-close"
+				onclick={() => (uploadError = null)}
+				aria-label="Dismiss"
+			>
+				×
+			</button>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -189,5 +268,39 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+
+	.avatar-error {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-top: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		background: #fee2e2;
+		color: #991b1b;
+		border: 2px solid #1a237e;
+		border-radius: 8px;
+		box-shadow: 2px 2px 0 #3f51b5;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 0.9rem;
+		font-weight: 700;
+		max-width: 12rem;
+		line-height: 1.3;
+	}
+
+	.avatar-error-close {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		color: #991b1b;
+		font-size: 1.1rem;
+		font-weight: 800;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 0.2rem;
+	}
+
+	.avatar-error-close:hover {
+		color: #1a237e;
 	}
 </style>

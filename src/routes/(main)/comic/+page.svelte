@@ -4,6 +4,7 @@
 	import BubbleButton from '$lib/components/BubbleButton.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { browser } from '$app/environment';
 	import {
 		comicState,
 		type BubbleType,
@@ -17,11 +18,11 @@
 
 	let step = $state<'select' | 'edit'>('select');
 	let bubbleText = $state('');
-	let printImageUrls = $state<string[]>([]);
 	let newComicName = $state('');
 	let thumbnailFile = $state<File | null>(null);
 	let thumbnailPreviewUrl = $state<string | null>(null);
 	let creatingComic = $state(false);
+	let createError = $state<string | null>(null);
 
 	// URL is the source of truth: ?id=X loads the comic into editor; no id => new-comic picker.
 	$effect(() => {
@@ -53,6 +54,8 @@
 	let lastSavedSnapshot = '';
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 	let suppressNextAutosave = false;
+	// In-flight guard: prevents two saveNow() calls from racing into the same comic.
+	let saveInFlight = false;
 	const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 	function buildSnapshot(): string {
@@ -68,7 +71,10 @@
 					width: b.width,
 					height: b.height,
 					text: b.text,
-					type: b.type
+					type: b.type,
+					// Must be included so bring-to-front / send-to-back operations
+					// (which only change z_index) trip the dirty check and autosave.
+					z_index: b.z_index
 				}))
 			}))
 		});
@@ -77,10 +83,17 @@
 	async function saveNow() {
 		const cid = comicState.comicId;
 		if (!cid) return;
+		// Re-entry guard: if a save is already in flight, defer this one
+		// by re-scheduling the autosave timer instead of starting a parallel POST.
+		if (saveInFlight) {
+			scheduleAutosave();
+			return;
+		}
 		if (saveTimer) {
 			clearTimeout(saveTimer);
 			saveTimer = null;
 		}
+		saveInFlight = true;
 		const snapshotAtStart = buildSnapshot();
 		saveStatus = 'saving';
 		saveError = null;
@@ -112,6 +125,8 @@
 		} catch (e: unknown) {
 			saveError = (e as Error)?.message ?? 'Save failed';
 			saveStatus = 'error';
+		} finally {
+			saveInFlight = false;
 		}
 	}
 
@@ -135,6 +150,63 @@
 			URL.revokeObjectURL(thumbnailPreviewUrl);
 			thumbnailPreviewUrl = null;
 		}
+	});
+
+	// Flush pending edits when the user closes the tab or navigates away.
+	// sendBeacon is the only POST allowed during unload (regular fetch is killed),
+	// so we mirror saveNow()'s payload through it. The user is also prompted to
+	// confirm if there are unsaved changes still in flight.
+	function hasUnsavedChanges(): boolean {
+		if (!comicState.comicId) return false;
+		if (saveTimer !== null) return true;
+		if (saveInFlight) return true;
+		return saveStatus === 'dirty' || saveStatus === 'saving' || saveStatus === 'error';
+	}
+
+	function flushSaveBeacon() {
+		const cid = comicState.comicId;
+		if (!cid) return;
+		try {
+			const payload = {
+				name: comicState.title,
+				templateId: comicState.templateId,
+				panels: comicState.panels.map((p: PanelState, idx: number) => ({
+					index: idx + 1,
+					w: p.stageW || undefined,
+					h: p.stageH || undefined,
+					bubbles: p.bubbles
+				}))
+			};
+			const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+			navigator.sendBeacon(`/api/comics/${cid}/save`, blob);
+		} catch {
+			// sendBeacon can throw on quota; nothing actionable during unload
+		}
+	}
+
+	$effect(() => {
+		if (!browser) return;
+
+		const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+			if (!hasUnsavedChanges()) return;
+			flushSaveBeacon();
+			e.preventDefault();
+			// Some browsers still require this for the confirmation dialog
+			e.returnValue = '';
+		};
+
+		// pagehide is more reliable than beforeunload on mobile/iOS Safari
+		// for actually firing the beacon when the tab is suspended.
+		const handlePageHide = () => {
+			if (hasUnsavedChanges()) flushSaveBeacon();
+		};
+
+		window.addEventListener('beforeunload', handleBeforeUnload);
+		window.addEventListener('pagehide', handlePageHide);
+		return () => {
+			window.removeEventListener('beforeunload', handleBeforeUnload);
+			window.removeEventListener('pagehide', handlePageHide);
+		};
 	});
 
 	// Watch edit state; schedule autosave when the snapshot diverges from the last saved one.
@@ -175,7 +247,9 @@
 	async function publishComic() {
 		const comicId = comicState.comicId;
 		if (!comicId) {
-			alert('No comic to publish — save or upload an image first.');
+			publishError = 'Save or upload an image before publishing.';
+			publishModalOpen = true;
+			publishStep = 'Failed';
 			return;
 		}
 		publishError = null;
@@ -270,15 +344,16 @@
 		}
 
 		creatingComic = true;
+		createError = null;
 		try {
 			const res = await fetch('/api/comics', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ name: newComicName || 'Untitled' })
 			});
-			const body = await res.json();
+			const body = await res.json().catch(() => null);
 			if (!res.ok) {
-				alert(body?.error ?? 'Failed to create comic');
+				createError = body?.error ?? 'Could not create comic. Please try again.';
 				return;
 			}
 			const newId = body.id;
@@ -305,7 +380,8 @@
 			// Reflect the new comic in the URL so reloads / navigation hydrate correctly
 			await goto(resolve(`/comic?id=${newId}`), { replaceState: true, noScroll: true });
 		} catch (e: unknown) {
-			alert(String(e));
+			console.error('createAndStart failed', e);
+			createError = 'Network error. Please check your connection and try again.';
 		} finally {
 			creatingComic = false;
 		}
@@ -381,6 +457,18 @@
 				<div class="form-divider">
 					<span>Choose a layout to start editing</span>
 				</div>
+
+				{#if createError}
+					<div class="create-error" role="alert" aria-live="assertive">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<circle cx="12" cy="12" r="10" />
+							<line x1="12" y1="8" x2="12" y2="12" />
+							<line x1="12" y1="16" x2="12.01" y2="16" />
+						</svg>
+						<span>{createError}</span>
+						<button type="button" class="create-error-close" aria-label="Dismiss" onclick={() => (createError = null)}>×</button>
+					</div>
+				{/if}
 
 				<div class="template-cards">
 					<!-- Template A: Classic 3×3 -->
@@ -793,6 +881,54 @@
 		gap: 20px;
 		flex-wrap: wrap;
 		justify-content: center;
+	}
+
+	.create-error {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+		padding: 0.75rem 0.9rem;
+		margin-bottom: 0.6rem;
+		background: #fee2e2;
+		color: #991b1b;
+		border: 2.5px solid #1a237e;
+		border-radius: 10px;
+		box-shadow: 3px 3px 0 #3f51b5;
+		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
+		font-size: 1rem;
+		font-weight: 700;
+		line-height: 1.35;
+	}
+
+	.create-error svg {
+		width: 20px;
+		height: 20px;
+		flex-shrink: 0;
+		color: #991b1b;
+		margin-top: 1px;
+	}
+
+	.create-error span {
+		flex: 1;
+		min-width: 0;
+		word-break: break-word;
+	}
+
+	.create-error-close {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		color: #991b1b;
+		font-size: 1.4rem;
+		line-height: 1;
+		font-weight: 800;
+		cursor: pointer;
+		padding: 0 0.25rem;
+		margin: -2px -2px 0 0;
+	}
+
+	.create-error-close:hover {
+		color: #1a237e;
 	}
 
 	.creating-label {
