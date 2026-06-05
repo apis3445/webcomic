@@ -250,20 +250,40 @@ class ComicState {
 			// (we don't — Konva just displays). Forcing CORS would trip a preflight
 			// and silently fail on storage URLs lacking strict CORS headers.
 			img.onload = () => {
-				panel.bgImage = img;
-				panel.bgImageUrl = url;
-				// Force reactive refresh
-				this.panels = [...this.panels];
-				resolve();
-				// Release the previous blob URL (if any) once we've safely
-				// swapped to the new image. http(s) URLs are untouched.
-				if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) {
-					try {
-						URL.revokeObjectURL(previousUrl);
-					} catch {
-						/* ignore */
+				// onload fires once bytes are in, but the image may still fail to
+				// decode (corrupt payload, unsupported pixel format, exceeds the
+				// platform's max bitmap size). decode() surfaces those explicitly
+				// instead of letting Konva paint a broken image silently.
+				img.decode().then(
+					() => {
+						panel.bgImage = img;
+						panel.bgImageUrl = url;
+						// Force reactive refresh
+						this.panels = [...this.panels];
+						resolve();
+						// Defer revoking the previous blob URL until after the current
+						// render cycle commits — revoking synchronously here races with
+						// Konva/Svelte still reading from the old src during the swap,
+						// which can blank the panel for a frame. http(s) URLs untouched.
+						if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) {
+							const raf =
+								typeof requestAnimationFrame === 'function'
+									? requestAnimationFrame
+									: (cb: () => void) => setTimeout(cb, 0);
+							raf(() => {
+								try {
+									URL.revokeObjectURL(previousUrl);
+								} catch {
+									/* ignore */
+								}
+							});
+						}
+					},
+					(err) => {
+						console.error('setPanelBgImage: image failed to decode', { index, url, err });
+						reject(new Error('Image failed to decode'));
 					}
-				}
+				);
 			};
 			img.onerror = () => {
 				console.error('setPanelBgImage: image failed to load', { index, url });
