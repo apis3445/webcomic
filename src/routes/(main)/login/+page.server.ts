@@ -1,5 +1,20 @@
 import { fail, redirect } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import type { Actions, PageServerLoad } from './$types';
+
+function maskEmail(email: string | null | undefined): string {
+	if (!email || typeof email !== 'string') return '<none>';
+	const at = email.indexOf('@');
+	if (at < 1) return '<invalid>';
+	const local = email.slice(0, at);
+	const domain = email.slice(at + 1);
+	const localMasked = local.length <= 2 ? `${local[0]}*` : `${local[0]}***${local[local.length - 1]}`;
+	return `${localMasked}@${domain}`;
+}
+
+function newCorrelationId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
 
 export const load: PageServerLoad = async ({ locals: { supabase } }) => {
 	const { data, error } = await supabase.auth.getClaims();
@@ -18,15 +33,15 @@ export const actions: Actions = {
 			url,
 			locals: { supabase }
 		} = event;
-		console.log('[magicLink] action invoked. origin:', url.origin, 'host:', url.host);
+		const reqId = newCorrelationId();
+		console.log('[magicLink]', reqId, 'invoked', { host: url.host });
 
 		const formData = await request.formData();
 		const email = formData.get('email') as string;
-		console.log('[magicLink] received email:', email);
 
 		const validEmail = /^[\w-.+]+@([\w-]+\.)+[\w-]{2,8}$/.test(email);
 		if (!validEmail) {
-			console.warn('[magicLink] invalid email format:', email);
+			console.warn('[magicLink]', reqId, 'invalid_email');
 			return fail(400, {
 				tab: 'magic',
 				errors: { email: 'Please enter a valid email address' },
@@ -35,30 +50,28 @@ export const actions: Actions = {
 		}
 
 		const emailRedirectTo = `${url.origin}/auth/confirm`;
-		console.log('[magicLink] calling signInWithOtp with emailRedirectTo:', emailRedirectTo);
-
-		const { data, error } = await supabase.auth.signInWithOtp({
+		const { error } = await supabase.auth.signInWithOtp({
 			email,
 			options: { emailRedirectTo }
 		});
 
 		if (error) {
-			console.error('[magicLink] supabase error:', {
-				message: error.message,
+			console.error('[magicLink]', reqId, 'otp_error', {
 				status: error.status,
-				name: error.name,
 				code: (error as { code?: string }).code,
-				full: error
+				name: error.name,
+				...(dev ? { email: maskEmail(email), message: error.message } : {})
 			});
 			return fail(400, {
 				tab: 'magic',
 				success: false,
 				email,
-				message: `Auth error: ${error.message}`
+				message: 'Unable to send magic link. Please try again.',
+				reqId
 			});
 		}
 
-		console.log('[magicLink] signInWithOtp success. data:', data);
+		console.log('[magicLink]', reqId, 'sent');
 		return {
 			tab: 'magic',
 			success: true,
@@ -97,6 +110,7 @@ export const actions: Actions = {
 			request,
 			locals: { supabase }
 		} = event;
+		const reqId = newCorrelationId();
 		const formData = await request.formData();
 		const email = formData.get('email') as string;
 		const password = formData.get('password') as string;
@@ -117,7 +131,18 @@ export const actions: Actions = {
 		const { error } = await supabase.auth.signUp({ email, password });
 
 		if (error) {
-			return fail(400, { tab: 'register', success: false, message: error.message });
+			console.error('[signUp]', reqId, 'signup_error', {
+				status: error.status,
+				code: (error as { code?: string }).code,
+				name: error.name,
+				...(dev ? { email: maskEmail(email), message: error.message } : {})
+			});
+			return fail(400, {
+				tab: 'register',
+				success: false,
+				message: 'Unable to create account. Please try again.',
+				reqId
+			});
 		}
 
 		return {
