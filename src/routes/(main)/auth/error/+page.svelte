@@ -8,7 +8,7 @@
 </script>
 
 <svelte:head>
-	<title>Sign in error — WebComic</title>
+	<title>Sign in error — Zinemash</title>
 </svelte:head>
 
 <div class="wrap">
