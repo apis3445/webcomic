@@ -23,53 +23,104 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
 
 	// Accept optional payload with template and panels/bubbles to persist before publishing
-	let payload: any = null;
-	try {
-		payload = await request.json();
-	} catch (e) {
-		payload = null;
-	}
+	const payload: any = await request.json().catch(() => null);
 
 	if (payload && (payload.templateId || payload.panels)) {
 		try {
-			// Ensure sheet #1 exists
-			let { data: sheetRow } = await locals.supabase
+			const isUuid = (s: any) =>
+				typeof s === 'string' &&
+				/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
+			let safeTemplateIdPub: string | null = null;
+			if (typeof payload.templateId === 'string') {
+				if (isUuid(payload.templateId)) {
+					safeTemplateIdPub = payload.templateId;
+				} else {
+					const { data: tmpl } = await locals.supabase
+						.from('sheet_templates')
+						.select('id')
+						.eq('slug', payload.templateId)
+						.maybeSingle();
+					if (tmpl && (tmpl as any).id) safeTemplateIdPub = (tmpl as any).id;
+					else if (payload.templateId)
+						console.warn(`publish: could not resolve template slug "${payload.templateId}"`);
+				}
+			}
+
+			// Ensure sheet #1 exists. Throw on any error so the surrounding catch
+			// logs the failure and skips the pre-persist block entirely (publish
+			// can still proceed against existing DB rows).
+			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
 				.from('sheets')
 				.select('id')
 				.eq('comic_id', comicId)
 				.eq('number', 1)
 				.maybeSingle();
+			if (sheetSelectErr) {
+				throw new Error(`sheet select failed: ${sheetSelectErr.message}`);
+			}
+			let sheetRow: { id: string } | null = sheetSelect as { id: string } | null;
 			if (!sheetRow) {
-				const { data: newSheet } = await locals.supabase
+				const { data: newSheet, error: newSheetErr } = await locals.supabase
 					.from('sheets')
-					.insert({ comic_id: comicId, number: 1, template_id: payload.templateId ?? null })
+					.insert({
+						comic_id: comicId,
+						number: 1,
+						template_id: safeTemplateIdPub
+					})
 					.select('id')
 					.single();
-				sheetRow = newSheet;
-			} else if (payload.templateId) {
-				// update template_id
-				await locals.supabase
+				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
+					throw new Error(`sheet insert failed: ${newSheetErr?.message ?? 'missing id'}`);
+				}
+				sheetRow = newSheet as { id: string };
+			} else if (payload.templateId && safeTemplateIdPub) {
+				// Only update when slug resolved; otherwise we'd wipe the existing template.
+				if (typeof sheetRow.id !== 'string') {
+					throw new Error('invalid sheet record (missing id)');
+				}
+				const { error: tmplUpdErr } = await locals.supabase
 					.from('sheets')
-					.update({ template_id: payload.templateId })
+					.update({ template_id: safeTemplateIdPub })
 					.eq('id', sheetRow.id);
+				if (tmplUpdErr) {
+					throw new Error(`sheet template update failed: ${tmplUpdErr.message}`);
+				}
 			}
 
 			const sheetId = sheetRow.id;
+			if (typeof sheetId !== 'string') {
+				throw new Error('resolved sheetId is not a string');
+			}
 
 			// Upsert panels and bubbles (simple approach: find panel by sheet_id + index)
 			if (Array.isArray(payload.panels)) {
 				for (const p of payload.panels) {
 					const idx = p.index;
-					// find existing panel
-					const { data: existingPanel } = await locals.supabase
+					if (typeof idx !== 'number' || !Number.isFinite(idx)) {
+						console.warn('publish: skipping panel with invalid index', p);
+						continue;
+					}
+					// Pick the oldest existing panel for this (sheet, index). Tolerates legacy
+					// duplicates created by older upload-image runs without erroring.
+					const { data: existingPanels, error: panelSelectErr } = await locals.supabase
 						.from('panels')
-						.select('id')
+						.select('id, created_at')
 						.eq('sheet_id', sheetId)
 						.eq('index', idx)
-						.maybeSingle();
+						.order('created_at', { ascending: true });
+					if (panelSelectErr) {
+						console.error('publish: panel select failed', panelSelectErr);
+						continue;
+					}
 					let panelId: string;
-					if (existingPanel && (existingPanel as any).id) {
-						panelId = (existingPanel as any).id;
+					if (existingPanels && existingPanels.length > 0) {
+						const candidate = (existingPanels[0] as any).id;
+						if (typeof candidate !== 'string') {
+							console.error('publish: existing panel missing id', existingPanels[0]);
+							continue;
+						}
+						panelId = candidate;
 						// update geometry if provided
 						const geom: any = {};
 						if (typeof p.x === 'number') geom.x = p.x;
@@ -77,10 +128,14 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 						if (typeof p.w === 'number') geom.w = p.w;
 						if (typeof p.h === 'number') geom.h = p.h;
 						if (Object.keys(geom).length > 0) {
-							await locals.supabase.from('panels').update(geom).eq('id', panelId);
+							const { error: panelUpdErr } = await locals.supabase
+								.from('panels')
+								.update(geom)
+								.eq('id', panelId);
+							if (panelUpdErr) console.error('publish: panel update failed', panelUpdErr);
 						}
 					} else {
-						const { data: insertedPanel } = await locals.supabase
+						const { data: insertedPanel, error: panelInsertErr } = await locals.supabase
 							.from('panels')
 							.insert({
 								sheet_id: sheetId,
@@ -92,11 +147,23 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							})
 							.select('id')
 							.single();
+						if (panelInsertErr || !insertedPanel || typeof (insertedPanel as any).id !== 'string') {
+							console.error('publish: panel insert failed', panelInsertErr);
+							continue;
+						}
 						panelId = (insertedPanel as any).id;
 					}
 
-					// Replace bubbles for this panel: delete and insert
-					await locals.supabase.from('bubbles').delete().eq('panel_id', panelId);
+					// Replace bubbles for this panel: delete and insert. Skip the insert
+					// if the delete failed so we don't leave partial state behind.
+					const { error: bubbleDelErr } = await locals.supabase
+						.from('bubbles')
+						.delete()
+						.eq('panel_id', panelId);
+					if (bubbleDelErr) {
+						console.error('publish: bubble delete failed', bubbleDelErr);
+						continue;
+					}
 					if (Array.isArray(p.bubbles) && p.bubbles.length) {
 						const toInsert = p.bubbles.map((b: any) => ({
 							panel_id: panelId,
@@ -108,9 +175,12 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							w: b.width ?? b.w,
 							h: b.height ?? b.h,
 							z_index: b.z_index ?? 0,
-							style: b.style ?? null
+							style: b.type ?? b.style ?? null
 						}));
-						await locals.supabase.from('bubbles').insert(toInsert);
+						const { error: bubbleInsErr } = await locals.supabase
+							.from('bubbles')
+							.insert(toInsert);
+						if (bubbleInsErr) console.error('publish: bubble insert failed', bubbleInsErr);
 					}
 				}
 			}

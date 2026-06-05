@@ -34,6 +34,7 @@
 					d="M14 23 L10 29 L18 23"
 					fill="var(--preview-bg)"
 					stroke="currentColor"
+					
 					stroke-width="1.75"
 					stroke-linejoin="round"
 				/>

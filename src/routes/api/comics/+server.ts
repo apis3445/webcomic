@@ -19,7 +19,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		.single();
 
 	if (error) {
-		console.error('create comic error', error);
 		return new Response(JSON.stringify({ error: error.message }), { status: 400 });
 	}
 

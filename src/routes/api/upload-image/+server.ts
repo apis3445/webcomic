@@ -38,7 +38,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	// Ensure sheet exists (sheetNumber)
-	let sheetId: string | null = null;
+	let sheetId!: string;
 	const { data: existingSheet } = await locals.supabase
 		.from('sheets')
 		.select('id')
@@ -62,20 +62,34 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		sheetId = newSheet.id;
 	}
 
-	// Create panel record
+	// Find existing panel for this (sheet, index) or create one. Avoids duplicate
+	// panel rows when an image is re-uploaded — duplicates break save/publish
+	// because their maybeSingle() lookup errors and they end up creating a third
+	// panel that bubbles attach to but no image points at.
 	const panelIndex1 = panelIndex;
-	const { data: panelData, error: pErr } = await locals.supabase
+	let panelId: string;
+	const { data: existingPanels } = await locals.supabase
 		.from('panels')
-		.insert({ sheet_id: sheetId, index: panelIndex1 })
-		.select('id')
-		.single();
-	if (pErr || !panelData) {
-		console.error('Failed to create panel', pErr);
-		return new Response(JSON.stringify({ error: pErr?.message ?? 'panel create failed' }), {
-			status: 500
-		});
+		.select('id, created_at')
+		.eq('sheet_id', sheetId)
+		.eq('index', panelIndex1)
+		.order('created_at', { ascending: true });
+	if (existingPanels && existingPanels.length > 0) {
+		panelId = (existingPanels[0] as any).id;
+	} else {
+		const { data: panelData, error: pErr } = await locals.supabase
+			.from('panels')
+			.insert({ sheet_id: sheetId, index: panelIndex1 })
+			.select('id')
+			.single();
+		if (pErr || !panelData) {
+			console.error('Failed to create panel', pErr);
+			return new Response(JSON.stringify({ error: pErr?.message ?? 'panel create failed' }), {
+				status: 500
+			});
+		}
+		panelId = panelData.id;
 	}
-	const panelId = panelData.id;
 
 	// Read blob bytes and validate MIME
 	const arrayBuffer = await file.arrayBuffer();

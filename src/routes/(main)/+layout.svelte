@@ -5,6 +5,22 @@
 	let { data, children } = $props();
 </script>
 
-<Navbar user={data.user ?? null} />
-{@render children()}
-<Footer />
+<div class="layout">
+	<Navbar user={data.user ?? null} />
+	<main class="layout-content">
+		{@render children()}
+	</main>
+	<Footer />
+</div>
+
+<style>
+	.layout {
+		display: flex;
+		flex-direction: column;
+		min-height: 100dvh;
+	}
+	.layout-content {
+		flex: 1;
+		padding-bottom: 40px;
+	}
+</style>

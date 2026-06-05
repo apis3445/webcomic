@@ -45,6 +45,8 @@ export interface PanelState {
 	bgImage: HTMLImageElement | undefined;
 	bgImageUrl: string;
 	bubbles: Bubble[];
+	stageW: number;
+	stageH: number;
 }
 
 function createPanels(count: number): PanelState[] {
@@ -53,7 +55,9 @@ function createPanels(count: number): PanelState[] {
 	return Array.from({ length: safeCount }, () => ({
 		bgImage: undefined,
 		bgImageUrl: '',
-		bubbles: []
+		bubbles: [],
+		stageW: 0,
+		stageH: 0
 	}));
 }
 
@@ -63,6 +67,8 @@ class ComicState {
 	activeBubbleId = $state<number | undefined>(undefined);
 
 	panels = $state<PanelState[]>(createPanels(9));
+
+	private _measureCanvas: HTMLCanvasElement | undefined;
 
 	// Persisted draft id for current comic (set after first upload)
 	comicId = $state<string | null>(null);
@@ -159,14 +165,17 @@ class ComicState {
 	// Resize a bubble to fit its text content using an offscreen canvas measurement
 	private resizeBubble(bubble: Bubble) {
 		if (!browser) return;
-		const paddingH = 12; // 6px left + 6px right (Konva padding 6)
-		const paddingV = 12; // 6px top + 6px bottom
+		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
+		const isOval = bubble.type === 'left-oval' || bubble.type === 'right-oval';
+		// Horizontal/vertical padding totals (both sides). Must match Panel.svelte's text inset.
+		const paddingH = (isCloud ? 32 : isOval ? 16 : 6) * 2;
+		const paddingV = (isCloud ? 14 : 6) * 2;
 		const font = 'bold 15px system-ui';
 
 		const size = this.measureTextSize(bubble.text || '', font);
 		// Preserve sensible minimums for certain bubble types
-		const minWidth = bubble.type === 'burst' ? 160 : 50;
-		const minHeight = bubble.type === 'burst' ? 130 : 24;
+		const minWidth = bubble.type === 'burst' ? 160 : isCloud ? 100 : 50;
+		const minHeight = bubble.type === 'burst' ? 130 : isCloud ? 56 : 24;
 		bubble.width = Math.max(Math.ceil(size.width + paddingH), minWidth);
 		bubble.height = Math.max(Math.ceil(size.height + paddingV), minHeight);
 	}
@@ -176,25 +185,19 @@ class ComicState {
 			return { width: 0, height: 15 };
 		}
 
-		// Reuse an offscreen canvas when possible
-		let canvas = (this as any)._measureCanvas as HTMLCanvasElement | undefined;
-		if (!canvas) {
-			canvas = document.createElement('canvas');
-			(this as any)._measureCanvas = canvas;
+		if (!this._measureCanvas) {
+			this._measureCanvas = document.createElement('canvas');
 		}
-		const ctx = canvas.getContext('2d');
+		const ctx = this._measureCanvas.getContext('2d');
 		if (!ctx) return { width: 0, height: 15 };
 
 		ctx.font = font;
 		const metrics = ctx.measureText(text || '');
 		const width = metrics.width;
-		let height = 15;
-		if ('actualBoundingBoxAscent' in metrics && 'actualBoundingBoxDescent' in metrics) {
-			height = (metrics as any).actualBoundingBoxAscent + (metrics as any).actualBoundingBoxDescent;
-		} else {
-			// Fallback approximate height using font size
-			height = 15 * 1.2;
-		}
+		const ascent = metrics.actualBoundingBoxAscent;
+		const descent = metrics.actualBoundingBoxDescent;
+		const height =
+			typeof ascent === 'number' && typeof descent === 'number' ? ascent + descent : 15 * 1.2;
 		return { width, height };
 	}
 
@@ -229,8 +232,8 @@ class ComicState {
 		this.templateId = id;
 		this.panels = Array.from({ length: count }, (_, i) =>
 			i < old.length
-				? { bgImage: old[i].bgImage, bgImageUrl: old[i].bgImageUrl, bubbles: [...old[i].bubbles] }
-				: { bgImage: undefined, bgImageUrl: '', bubbles: [] }
+				? { bgImage: old[i].bgImage, bgImageUrl: old[i].bgImageUrl, bubbles: [...old[i].bubbles], stageW: old[i].stageW, stageH: old[i].stageH }
+				: { bgImage: undefined, bgImageUrl: '', bubbles: [], stageW: 0, stageH: 0 }
 		);
 		this.activePanelIndex = 0;
 		this.activeBubbleId = undefined;
@@ -238,6 +241,49 @@ class ComicState {
 
 	clearAll() {
 		this.panels = createPanels(getPanelCount(this.templateId));
+		this.activePanelIndex = 0;
+		this.activeBubbleId = undefined;
+	}
+
+	reset() {
+		this.templateId = 'grid-3x3';
+		this.panels = createPanels(getPanelCount('grid-3x3'));
+		this.activePanelIndex = 0;
+		this.activeBubbleId = undefined;
+		this.comicId = null;
+		this.title = 'Untitled';
+	}
+
+	hydrate(payload: {
+		id: string;
+		name: string | null;
+		templateSlug?: string | null;
+		panels: Array<{
+			index: number;
+			imageUrl: string | null;
+			bubbles: Bubble[];
+		}>;
+	}) {
+		const slugIsKnown =
+			payload.templateSlug === 'grid-3x3' || payload.templateSlug === 'page-1-2-3';
+		const templateId: TemplateId = slugIsKnown
+			? (payload.templateSlug as TemplateId)
+			: payload.panels.length === 6
+				? 'page-1-2-3'
+				: 'grid-3x3';
+		const count = getPanelCount(templateId);
+		this.templateId = templateId;
+		this.panels = createPanels(count);
+		this.comicId = payload.id;
+		this.title = payload.name || 'Untitled';
+		for (const pData of payload.panels) {
+			const idx = (pData.index ?? 1) - 1;
+			if (idx < 0 || idx >= this.panels.length) continue;
+			this.panels[idx].bubbles = pData.bubbles;
+			if (pData.imageUrl) {
+				this.setPanelBgImage(idx, pData.imageUrl);
+			}
+		}
 		this.activePanelIndex = 0;
 		this.activeBubbleId = undefined;
 	}

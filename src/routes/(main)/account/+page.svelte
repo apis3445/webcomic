@@ -57,7 +57,6 @@
 					<Avatar
 						{supabase}
 						bind:url={avatarUrl}
-						size={10}
 						onupload={() => profileForm.requestSubmit()}
 					/>
 				</div>

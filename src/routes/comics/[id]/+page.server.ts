@@ -32,6 +32,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		return { status: 500 };
 	}
 
+	// Resolve the template slug explicitly so the page can render the right layout.
+	// Embedded join via sheet_templates(slug) silently returns null without a FK.
+	let templateSlug: string | null = null;
+	const firstTemplateId = (sheets || []).find((s: any) => s.template_id)?.template_id;
+	if (firstTemplateId) {
+		const { data: tmpl } = await locals.supabase
+			.from('sheet_templates')
+			.select('slug')
+			.eq('id', firstTemplateId)
+			.maybeSingle();
+		templateSlug = (tmpl as { slug: string | null } | null)?.slug ?? null;
+	}
+
 	const sheetIds = (sheets || []).map((s: any) => s.id);
 
 	// Fetch panels for these sheets
@@ -63,7 +76,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// Fetch images
 	const { data: imgs, error: imgsErr } = await locals.supabase
 		.from('images')
-		.select('id, panel_id, public_url, filename')
+		.select('id, panel_id, public_url, filename, width, height')
 		.eq('comic_id', id)
 		.order('created_at', { ascending: true });
 
@@ -102,6 +115,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	return {
 		comic,
 		sheets: sheets || [],
+		templateSlug,
 		panels: orderedPanels
 	};
 };

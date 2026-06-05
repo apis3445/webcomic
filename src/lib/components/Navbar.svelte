@@ -52,11 +52,13 @@
 
 		<nav class="nav-links">
 			{#if user}
+				<a href={resolve('/#features')} class="nav-link">How it works</a>
+				<a href={resolve('/browse')} class="nav-link">Browse Comics</a>
 				<a href={resolve('/comics')} class="nav-link">My Comics</a>
 				<a href={resolve('/comic')} class="nav-link">New Comic</a>
 			{:else}
 				<a href={resolve('/#features')} class="nav-link">How it works</a>
-				<a href={resolve('/comic')} class="nav-link">Editor</a>
+				<a href={resolve('/browse')} class="nav-link">Browse Comics</a>
 			{/if}
 		</nav>
 
@@ -183,13 +185,13 @@
 	}
 
 	.navbar-inner {
-		max-width: 1200px;
 		margin: 0 auto;
 		padding: 0 1.5rem;
 		height: 64px;
 		display: flex;
 		align-items: center;
 		gap: 2rem;
+		font-family: 'Comic Neue', sans-serif;
 	}
 
 	.logo {
@@ -222,10 +224,10 @@
 	}
 
 	.nav-link {
-		padding: 0.5rem 1rem;
+		padding: 0.5rem;
 		color: rgba(255, 255, 255, 0.85);
 		text-decoration: none;
-		font-size: 0.92rem;
+		font-size: 1.1rem;
 		font-weight: 600;
 		border-radius: 8px;
 		transition:
@@ -388,5 +390,4 @@
 			max-width: 90px;
 		}
 	}
-
 </style>

@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { Stage, Layer, Image, Group, Text, Rect, Circle, Line, Path } from 'svelte-konva';
+	import { Stage, Layer, Image, Group, Text, Circle, Line, Path } from 'svelte-konva';
 	import type { KonvaEventObject } from 'konva/lib/Node';
 	import { comicState } from '../comicState.svelte';
-	import type { ComicStateType } from '../comicState.svelte';
 	// Server-backed upload flow: POST FormData to /api/upload-image and create comics via /api/comics
 	// (using event.locals.supabase on the server)
 
@@ -45,7 +44,7 @@
 		uploading = true;
 		try {
 			// Ensure comic exists server-side
-			let comicId = (comicState as ComicStateType).comicId as string | null;
+			let comicId: string | null = comicState.comicId;
 			if (!comicId) {
 				const res = await fetch('/api/comics', {
 					method: 'POST',
@@ -57,8 +56,12 @@
 					return;
 				}
 				const body = await res.json();
-				comicId = body.id;
-				(comicState as ComicStateType).setComicId(comicId);
+				comicId = body.id ?? null;
+				if (!comicId) {
+					console.error('Comic create response missing id');
+					return;
+				}
+				comicState.setComicId(comicId);
 			}
 
 			// Measure image dimensions in browser before upload so server stores width/height
@@ -69,26 +72,52 @@
 				if (typeof createImageBitmap === 'function') {
 					try {
 						const bmp = await createImageBitmap(file as Blob);
-						width = (bmp as any).width || 0;
-						height = (bmp as any).height || 0;
-						if (typeof (bmp as any).close === 'function') (bmp as any).close();
+						width = bmp.width || 0;
+						height = bmp.height || 0;
+						bmp.close();
 					} catch (err) {
 						// fallback to Image approach below
 						console.warn('createImageBitmap failed, falling back to Image:', err);
-						// continue to Image fallback
 						const imgUrl = URL.createObjectURL(file);
 						await new Promise<void>((resolve) => {
 							let settled = false;
-							const img = new Image();
+							const img = new window.Image();
 							img.onload = () => {
 								if (settled) return;
 								settled = true;
-								try { width = img.naturalWidth || img.width || 0; height = img.naturalHeight || img.height || 0; } catch (e) {}
-								try { URL.revokeObjectURL(imgUrl); } catch {}
+								try {
+									width = img.naturalWidth || img.width || 0;
+									height = img.naturalHeight || img.height || 0;
+								} catch {
+									/* ignore */
+								}
+								try {
+									URL.revokeObjectURL(imgUrl);
+								} catch {
+									/* ignore */
+								}
 								resolve();
 							};
-							img.onerror = () => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); };
-							const to = setTimeout(() => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); }, 5000);
+							img.onerror = () => {
+								if (settled) return;
+								settled = true;
+								try {
+									URL.revokeObjectURL(imgUrl);
+								} catch {
+									/* ignore */
+								}
+								resolve();
+							};
+							setTimeout(() => {
+								if (settled) return;
+								settled = true;
+								try {
+									URL.revokeObjectURL(imgUrl);
+								} catch {
+									/* ignore */
+								}
+								resolve();
+							}, 5000);
 							img.src = imgUrl;
 						});
 					}
@@ -97,16 +126,43 @@
 					const imgUrl = URL.createObjectURL(file);
 					await new Promise<void>((resolve) => {
 						let settled = false;
-						const img = new Image();
+						const img = new window.Image();
 						img.onload = () => {
 							if (settled) return;
 							settled = true;
-							try { width = img.naturalWidth || img.width || 0; height = img.naturalHeight || img.height || 0; } catch (e) {}
-							try { URL.revokeObjectURL(imgUrl); } catch {}
+							try {
+								width = img.naturalWidth || img.width || 0;
+								height = img.naturalHeight || img.height || 0;
+							} catch {
+								/* ignore */
+							}
+							try {
+								URL.revokeObjectURL(imgUrl);
+							} catch {
+								/* ignore */
+							}
 							resolve();
 						};
-						img.onerror = () => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); };
-						const to = setTimeout(() => { if (settled) return; settled = true; try { URL.revokeObjectURL(imgUrl); } catch {} ; resolve(); }, 5000);
+						img.onerror = () => {
+							if (settled) return;
+							settled = true;
+							try {
+								URL.revokeObjectURL(imgUrl);
+							} catch {
+								/* ignore */
+							}
+							resolve();
+						};
+						setTimeout(() => {
+							if (settled) return;
+							settled = true;
+							try {
+								URL.revokeObjectURL(imgUrl);
+							} catch {
+								/* ignore */
+							}
+							resolve();
+						}, 5000);
 						img.src = imgUrl;
 					});
 				}
@@ -180,13 +236,47 @@
 		const observer = new ResizeObserver(() => {
 			width = node.clientWidth;
 			height = node.clientHeight;
+			comicState.panels[index].stageW = width;
+			comicState.panels[index].stageH = height;
 		});
 		observer.observe(node);
 		return () => observer.disconnect();
 	}
 
+	// Scalloped thought-cloud outline: anchor points on an inner ellipse,
+	// outward quadratic-bezier bumps between them give the puffy silhouette.
+	function buildCloudPath(w: number, h: number): string {
+		const cx = w / 2;
+		const cy = h / 2;
+		const innerA = w * 0.4;
+		const innerB = h * 0.38;
+		const outerA = w * 0.5;
+		const outerB = h * 0.52;
+		const N = 12;
+		const parts: string[] = [];
+		for (let i = 0; i <= N; i++) {
+			const angle = (i / N) * 2 * Math.PI;
+			const x = cx + innerA * Math.cos(angle);
+			const y = cy + innerB * Math.sin(angle);
+			if (i === 0) {
+				parts.push(`M ${x.toFixed(2)} ${y.toFixed(2)}`);
+			} else {
+				const mid = ((i - 0.5) / N) * 2 * Math.PI;
+				const ctrlX = cx + outerA * Math.cos(mid);
+				const ctrlY = cy + outerB * Math.sin(mid);
+				parts.push(`Q ${ctrlX.toFixed(2)} ${ctrlY.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)}`);
+			}
+		}
+		parts.push('Z');
+		return parts.join(' ');
+	}
+
 	// Generate a single seamless SVG Path for the bubble + tail
 	function getBubblePathData(type: string, w: number, h: number): string {
+		if (type === 'left-cloud' || type === 'right-cloud') {
+			return buildCloudPath(w, h);
+		}
+
 		const r = type.includes('oval') ? Math.min(w, h) / 2 : type === 'box' ? 0 : 4;
 
 		if (type === 'left-oval' || type === 'box-izq') {
@@ -319,88 +409,69 @@
 								ondragmove={(e) => onBubbleDragMove(e, bubble.id)}
 								onclick={(e) => onBubbleClick(e, bubble.id)}
 							>
-								<!-- Seamless Path Bubble Outline for Ovals and Boxes -->
-								{#if bubble.type !== 'left-cloud' && bubble.type !== 'right-cloud'}
-									<Path
-										data={getBubblePathData(bubble.type, bubble.width, bubble.height)}
+								<!-- Seamless Path Bubble Outline -->
+								<Path
+									data={getBubblePathData(bubble.type, bubble.width, bubble.height)}
+									fill="#ffffff"
+									stroke={strokeColor}
+									strokeWidth={strokeW}
+								/>
+
+								<!-- Thought-cloud floating tail circles, trailing down from the bubble -->
+								{#if bubble.type === 'left-cloud'}
+									<Circle
+										x={bubble.width * 0.2}
+										y={bubble.height + 6}
+										radius={6}
 										fill="#ffffff"
 										stroke={strokeColor}
-										strokeWidth={strokeW}
+										strokeWidth={2}
 									/>
-								{:else}
-									<!-- Cloud thought bubble with floating circles -->
-									{#if bubble.type === 'left-cloud'}
-										<Circle
-											cx={bubble.width * 0.25}
-											cy={bubble.height + 4}
-											radius={6}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={2}
-										/>
-										<Circle
-											cx={bubble.width * 0.15}
-											cy={bubble.height + 11}
-											radius={4}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={1.5}
-										/>
-										<Circle
-											cx={bubble.width * 0.08}
-											cy={bubble.height + 16}
-											radius={2.5}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={1}
-										/>
-									{:else if bubble.type === 'right-cloud'}
-										<Circle
-											cx={bubble.width * 0.75}
-											cy={bubble.height + 4}
-											radius={6}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={2}
-										/>
-										<Circle
-											cx={bubble.width * 0.85}
-											cy={bubble.height + 11}
-											radius={4}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={1.5}
-										/>
-										<Circle
-											cx={bubble.width * 0.92}
-											cy={bubble.height + 16}
-											radius={2.5}
-											fill="#ffffff"
-											stroke={strokeColor}
-											strokeWidth={1}
-										/>
-									{/if}
-									<Rect
-										width={bubble.width}
-										height={bubble.height}
+									<Circle
+										x={bubble.width * 0.1}
+										y={bubble.height + 16}
+										radius={3.5}
 										fill="#ffffff"
 										stroke={strokeColor}
-										strokeWidth={strokeW}
-										cornerRadius={18}
+										strokeWidth={1.5}
+									/>
+								{:else if bubble.type === 'right-cloud'}
+									<Circle
+										x={bubble.width * 0.8}
+										y={bubble.height + 6}
+										radius={6}
+										fill="#ffffff"
+										stroke={strokeColor}
+										strokeWidth={2}
+									/>
+									<Circle
+										x={bubble.width * 0.9}
+										y={bubble.height + 16}
+										radius={3.5}
+										fill="#ffffff"
+										stroke={strokeColor}
+										strokeWidth={1.5}
 									/>
 								{/if}
 
 								<!-- Speech Bubble Text -->
+								{@const isCloudT =
+									bubble.type === 'left-cloud' || bubble.type === 'right-cloud'}
+								{@const isOvalT = bubble.type === 'left-oval' || bubble.type === 'right-oval'}
+								{@const padH = isCloudT ? 32 : isOvalT ? 16 : 6}
+								{@const padV = isCloudT ? 14 : 6}
 								<Text
 									text={bubble.text}
+									x={padH}
+									y={padV}
+									width={Math.max(bubble.width - padH * 2, 1)}
+									height={Math.max(bubble.height - padV * 2, 1)}
 									fontSize={15}
 									fontStyle="bold"
 									fontFamily="system-ui, sans-serif"
 									align="center"
 									verticalAlign="middle"
-									width={bubble.width}
-									height={bubble.height}
-									padding={6}
+									padding={0}
 									fill="#000000"
 								/>
 
