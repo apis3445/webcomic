@@ -68,11 +68,13 @@
 
 		<nav id="mobile-nav" class="nav-links" class:open={mobileNavOpen}>
 			{#if user}
+				<a href={resolve('/#features')} class="nav-link" onclick={closeMobileNav}>How it works</a>
+				<a href={resolve('/browse')} class="nav-link" onclick={closeMobileNav}>Browse Comics</a>
 				<a href={resolve('/comics')} class="nav-link" onclick={closeMobileNav}>My Comics</a>
 				<a href={resolve('/comic')} class="nav-link" onclick={closeMobileNav}>New Comic</a>
 			{:else}
 				<a href={resolve('/#features')} class="nav-link" onclick={closeMobileNav}>How it works</a>
-				<a href={resolve('/comic')} class="nav-link" onclick={closeMobileNav}>Editor</a>
+				<a href={resolve('/browse')} class="nav-link" onclick={closeMobileNav}>Browse Comics</a>
 			{/if}
 		</nav>
 
@@ -219,7 +221,7 @@
 		height: 64px;
 		display: flex;
 		align-items: center;
-		gap: 2rem;
+		gap: 1.25rem;
 	}
 
 	.logo {
@@ -302,7 +304,6 @@
 		display: flex;
 		align-items: center;
 		gap: 0.4rem;
-		flex: 1;
 	}
 
 	.nav-link {
@@ -329,6 +330,7 @@
 		align-items: center;
 		gap: 0.6rem;
 		flex-shrink: 0;
+		margin-left: auto;
 	}
 
 	.hamburger {

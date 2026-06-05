@@ -2,6 +2,16 @@
 	font-family: 'Comic Neue', cursive;
 }
 
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	min-height: 100dvh;
+}
+
 .one {
 	grid-area: 1 / 1 / 2 / 7;
 }
