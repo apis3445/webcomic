@@ -5,7 +5,7 @@
 	<!-- Bottom bar -->
 	<div class="footer-bottom">
 		<p class="footer-copy">© {new Date().getFullYear()} WebComic. Made with ❤️ for storytellers.</p>
-		<p class="footer-made">Your story, your comicss.</p>
+		<p class="footer-made">Your story, your comics.</p>
 	</div>
 </footer>
 
