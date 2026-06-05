@@ -1,5 +1,5 @@
 // src/routes/+layout.ts
-import { PUBLIC_SUPABASE_PUBLISHABLE_KEY, PUBLIC_SUPABASE_URL } from '$env/static/public';
+import { PUBLIC_SUPABASE_PUBLISHABLE_ID, PUBLIC_SUPABASE_URL } from '$env/static/public';
 import type { LayoutLoad } from './$types';
 import { createBrowserClient, createServerClient, isBrowser } from '@supabase/ssr';
 
@@ -7,13 +7,13 @@ export const load: LayoutLoad = async ({ fetch, data, depends }) => {
 	depends('supabase:auth');
 
 	const supabase = isBrowser()
-		? createBrowserClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
-				global: { fetch }
-			})
-		: createServerClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
-				global: { fetch },
-				cookies: { getAll: () => [] }
-			});
+		? createBrowserClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_ID, {
+			global: { fetch }
+		})
+		: createServerClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_ID, {
+			global: { fetch },
+			cookies: { getAll: () => [] }
+		});
 
 	/**
 	 * `getClaims` validates the JWT signature locally (for asymmetric keys) once
