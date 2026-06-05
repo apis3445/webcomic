@@ -10,6 +10,7 @@
 		type TemplateId,
 		type PanelState
 	} from '$lib/comicState.svelte';
+	import { onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
@@ -122,10 +123,32 @@
 		}, AUTOSAVE_DEBOUNCE_MS);
 	}
 
+	// Cancel any pending autosave when the component unmounts so navigation
+	// can't trigger a stray network write after teardown. Also revoke the
+	// thumbnail preview blob URL so it doesn't linger in memory until GC.
+	onDestroy(() => {
+		if (saveTimer) {
+			clearTimeout(saveTimer);
+			saveTimer = null;
+		}
+		if (thumbnailPreviewUrl) {
+			URL.revokeObjectURL(thumbnailPreviewUrl);
+			thumbnailPreviewUrl = null;
+		}
+	});
+
 	// Watch edit state; schedule autosave when the snapshot diverges from the last saved one.
 	$effect(() => {
 		const cid = comicState.comicId;
-		if (!cid || step !== 'edit') return;
+		if (!cid || step !== 'edit') {
+			// Leaving edit mode (or no comic) — cancel any pending autosave so it
+			// can't fire against a stale/reset comicState.
+			if (saveTimer) {
+				clearTimeout(saveTimer);
+				saveTimer = null;
+			}
+			return;
+		}
 		const snap = buildSnapshot();
 		if (snap === lastSavedSnapshot) return;
 		if (suppressNextAutosave) {
@@ -272,6 +295,13 @@
 			comicState.setTitle(newComicName || 'Untitled');
 			comicState.setTemplate(templateId);
 			step = 'edit';
+			// Thumbnail preview is no longer displayed after we switch to edit mode —
+			// revoke the blob URL now instead of waiting for component teardown.
+			if (thumbnailPreviewUrl) {
+				URL.revokeObjectURL(thumbnailPreviewUrl);
+				thumbnailPreviewUrl = null;
+			}
+			thumbnailFile = null;
 			// Reflect the new comic in the URL so reloads / navigation hydrate correctly
 			await goto(resolve(`/comic?id=${newId}`), { replaceState: true, noScroll: true });
 		} catch (e: unknown) {
