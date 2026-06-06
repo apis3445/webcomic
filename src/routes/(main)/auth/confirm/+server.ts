@@ -21,6 +21,20 @@ function newCorrelationId(): string {
 	return Math.random().toString(36).slice(2, 10);
 }
 
+// Translate a raw Supabase auth error into a short, user-safe message. The
+// underlying SDK message (e.g. "PKCE code verifier not found in storage…")
+// must stay in server logs only — never echoed to the user.
+function friendlyAuthMessage(error: { message?: string; code?: string }): string {
+	const msg = (error.message ?? '').toLowerCase();
+	if (msg.includes('code verifier') || msg.includes('pkce')) {
+		return 'This magic link must be opened in the same browser where you requested it. Please request a new link from this device.';
+	}
+	if (msg.includes('expired') || error.code === 'otp_expired') {
+		return 'This link has expired. Please request a new one.';
+	}
+	return 'Something went wrong during sign in. Please try again.';
+}
+
 export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	const reqId = newCorrelationId();
 	const code = url.searchParams.get('code');
@@ -47,16 +61,18 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	redirectTo.searchParams.delete('error_description');
 
 	// Supabase bounced back without verifying (redirect URL not allow-listed,
-	// expired link, already used, etc.) — surface the reason on the error page.
+	// expired link, already used, etc.). The raw description goes to logs only;
+	// the user sees a curated message.
 	if (inboundError) {
 		console.warn('[auth/confirm]', reqId, 'inbound_error', {
 			error: inboundError,
 			description: inboundErrorDescription
 		});
 		redirectTo.pathname = '/auth/error';
-		if (inboundErrorDescription) {
-			redirectTo.searchParams.set('error_description', inboundErrorDescription);
-		}
+		redirectTo.searchParams.set(
+			'error_description',
+			friendlyAuthMessage({ message: inboundErrorDescription ?? '', code: inboundError })
+		);
 		redirect(303, redirectTo);
 	}
 
@@ -74,7 +90,7 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 			message: error.message
 		});
 		redirectTo.pathname = '/auth/error';
-		redirectTo.searchParams.set('error_description', error.message);
+		redirectTo.searchParams.set('error_description', friendlyAuthMessage(error));
 		redirect(303, redirectTo);
 	}
 
@@ -92,7 +108,7 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 			message: error.message
 		});
 		redirectTo.pathname = '/auth/error';
-		redirectTo.searchParams.set('error_description', error.message);
+		redirectTo.searchParams.set('error_description', friendlyAuthMessage(error));
 		redirect(303, redirectTo);
 	}
 
