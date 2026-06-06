@@ -17,11 +17,25 @@ function sanitizeNext(raw: string | null): string {
 	return raw;
 }
 
+function newCorrelationId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
+
 export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
+	const reqId = newCorrelationId();
 	const code = url.searchParams.get('code');
 	const token_hash = url.searchParams.get('token_hash');
 	const type = url.searchParams.get('type') as EmailOtpType | null;
 	const next = sanitizeNext(url.searchParams.get('next'));
+	const inboundError = url.searchParams.get('error');
+	const inboundErrorDescription = url.searchParams.get('error_description');
+
+	console.log('[auth/confirm]', reqId, 'invoked', {
+		hasCode: !!code,
+		hasTokenHash: !!token_hash,
+		type,
+		inboundError
+	});
 
 	const redirectTo = new URL(url);
 	redirectTo.pathname = next;
@@ -29,19 +43,61 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	redirectTo.searchParams.delete('token_hash');
 	redirectTo.searchParams.delete('type');
 	redirectTo.searchParams.delete('next');
+	redirectTo.searchParams.delete('error');
+	redirectTo.searchParams.delete('error_description');
+
+	// Supabase bounced back without verifying (redirect URL not allow-listed,
+	// expired link, already used, etc.) — surface the reason on the error page.
+	if (inboundError) {
+		console.warn('[auth/confirm]', reqId, 'inbound_error', {
+			error: inboundError,
+			description: inboundErrorDescription
+		});
+		redirectTo.pathname = '/auth/error';
+		if (inboundErrorDescription) {
+			redirectTo.searchParams.set('error_description', inboundErrorDescription);
+		}
+		redirect(303, redirectTo);
+	}
 
 	// PKCE flow (default for @supabase/ssr) — magic link sends a `code`
 	if (code) {
 		const { error } = await supabase.auth.exchangeCodeForSession(code);
-		if (!error) redirect(303, redirectTo);
+		if (!error) {
+			console.log('[auth/confirm]', reqId, 'exchange_success');
+			redirect(303, redirectTo);
+		}
+		console.error('[auth/confirm]', reqId, 'exchange_error', {
+			status: error.status,
+			code: (error as { code?: string }).code,
+			name: error.name,
+			message: error.message
+		});
+		redirectTo.pathname = '/auth/error';
+		redirectTo.searchParams.set('error_description', error.message);
+		redirect(303, redirectTo);
 	}
 
 	// OTP / token-hash flow (older or email OTP without PKCE)
 	if (token_hash && type) {
 		const { error } = await supabase.auth.verifyOtp({ type, token_hash });
-		if (!error) redirect(303, redirectTo);
+		if (!error) {
+			console.log('[auth/confirm]', reqId, 'verify_success');
+			redirect(303, redirectTo);
+		}
+		console.error('[auth/confirm]', reqId, 'verify_error', {
+			status: error.status,
+			code: (error as { code?: string }).code,
+			name: error.name,
+			message: error.message
+		});
+		redirectTo.pathname = '/auth/error';
+		redirectTo.searchParams.set('error_description', error.message);
+		redirect(303, redirectTo);
 	}
 
+	console.warn('[auth/confirm]', reqId, 'no_token');
 	redirectTo.pathname = '/auth/error';
+	redirectTo.searchParams.set('error_description', 'Missing or invalid magic link token.');
 	redirect(303, redirectTo);
 };

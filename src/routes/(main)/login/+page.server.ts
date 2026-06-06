@@ -37,7 +37,7 @@ export const actions: Actions = {
 		console.log('[magicLink]', reqId, 'invoked', { host: url.host });
 
 		const formData = await request.formData();
-		const email = formData.get('email') as string;
+		const email = (formData.get('email') ?? '').toString().trim();
 
 		const validEmail =
 			/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(
@@ -52,24 +52,38 @@ export const actions: Actions = {
 			});
 		}
 
-		const emailRedirectTo = `${url.origin}/auth/confirm`;
-		const { error } = await supabase.auth.signInWithOtp({
-			email,
-			options: { emailRedirectTo }
-		});
-
-		if (error) {
-			console.error('[magicLink]', reqId, 'otp_error', {
-				status: error.status,
-				code: (error as { code?: string }).code,
-				name: error.name,
-				...(dev ? { email: maskEmail(email), message: error.message } : {})
+		try {
+			const emailRedirectTo = `${url.origin}/auth/confirm`;
+			const { error } = await supabase.auth.signInWithOtp({
+				email,
+				options: { emailRedirectTo }
 			});
-			return fail(400, {
+
+			if (error) {
+				console.error('[magicLink]', reqId, 'otp_error', {
+					status: error.status,
+					code: (error as { code?: string }).code,
+					name: error.name,
+					...(dev ? { email: maskEmail(email), message: error.message } : {})
+				});
+				return fail(400, {
+					tab: 'magic',
+					success: false,
+					email,
+					message: 'Unable to send magic link. Please try again.',
+					reqId
+				});
+			}
+		} catch (err) {
+			console.error('[magicLink]', reqId, 'unexpected_error', {
+				name: (err as Error)?.name,
+				...(dev ? { email: maskEmail(email), message: (err as Error)?.message } : {})
+			});
+			return fail(500, {
 				tab: 'magic',
 				success: false,
 				email,
-				message: 'Unable to send magic link. Please try again.',
+				message: 'Something went wrong sending the magic link. Please try again later.',
 				reqId
 			});
 		}

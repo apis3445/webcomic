@@ -23,6 +23,27 @@
 	let thumbnailPreviewUrl = $state<string | null>(null);
 	let creatingComic = $state(false);
 	let createError = $state<string | null>(null);
+	let isPrintMode = $state(false);
+
+	$effect(() => {
+		if (!browser) return;
+
+		const mql = window.matchMedia('print');
+		const onChange = (e: MediaQueryListEvent) => (isPrintMode = e.matches);
+		const onBefore = () => (isPrintMode = true);
+		const onAfter = () => (isPrintMode = false);
+
+		isPrintMode = mql.matches;
+		mql.addEventListener('change', onChange);
+		window.addEventListener('beforeprint', onBefore);
+		window.addEventListener('afterprint', onAfter);
+
+		return () => {
+			mql.removeEventListener('change', onChange);
+			window.removeEventListener('beforeprint', onBefore);
+			window.removeEventListener('afterprint', onAfter);
+		};
+	});
 
 	// URL is the source of truth: ?id=X loads the comic into editor; no id => new-comic picker.
 	$effect(() => {
@@ -671,17 +692,19 @@
 </div>
 
 <!-- Print View -->
-<div class="print-only">
-	<div class="print-comic-grid" class:print-template-page={comicState.templateId === 'page-1-2-3'}>
-		{#each printImageUrls as url, i (i)}
-			{#if url}
-				<img src={url} alt="Panel {i + 1}" class="print-panel" />
-			{:else}
-				<div class="print-panel print-panel-empty"></div>
-			{/if}
-		{/each}
+{#if isPrintMode}
+	<div class="print-only">
+		<div class="print-comic-grid" class:print-template-page={comicState.templateId === 'page-1-2-3'}>
+			{#each comicState.panels as panel, i (i)}
+				{#if panel.bgImageUrl}
+					<img src={panel.bgImageUrl} alt="Panel {i + 1}" class="print-panel" />
+				{:else}
+					<div class="print-panel print-panel-empty"></div>
+				{/if}
+			{/each}
+		</div>
 	</div>
-</div>
+{/if}
 
 <style>
 	:global(body) {
