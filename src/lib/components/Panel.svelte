@@ -497,7 +497,10 @@
 				ondrop={drop}
 			>
 				<Stage {width} {height} onclick={handleStageClick}>
-					<Layer>
+					<!-- Background layer kept separate from bubbles so the bg image,
+						 which mounts asynchronously after decode, can't end up drawn
+						 on top of bubbles that hydrated synchronously. -->
+					<Layer listening={false}>
 						{#if bgImage}
 							<Image
 								image={bgImage}
@@ -509,6 +512,8 @@
 								height={bgImage.height}
 							/>
 						{/if}
+					</Layer>
+					<Layer>
 						{#each bubbles as bubble (bubble.id)}
 							{@const isSelected = comicState.activeBubbleId === bubble.id && isActivePanel}
 							{@const strokeColor = isSelected ? '#2563eb' : '#000000'}
@@ -582,6 +587,8 @@
 									fontFamily="system-ui, sans-serif"
 									align="center"
 									verticalAlign="middle"
+									wrap="word"
+									lineHeight={1.2}
 									padding={0}
 									fill="#000000"
 								/>

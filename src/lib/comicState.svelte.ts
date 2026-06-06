@@ -190,7 +190,9 @@ class ComicState {
 		}
 	}
 
-	// Resize a bubble to fit its text content using an offscreen canvas measurement
+	// Resize a bubble to fit its text content using an offscreen canvas measurement.
+	// Wraps long text at a max content width and respects explicit \n line breaks
+	// from the textarea so the bubble grows downward instead of stretching wide.
 	private resizeBubble(bubble: Bubble) {
 		if (!browser) return;
 		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
@@ -199,13 +201,71 @@ class ComicState {
 		const paddingH = (isCloud ? 32 : isOval ? 16 : 6) * 2;
 		const paddingV = (isCloud ? 14 : 6) * 2;
 		const font = 'bold 15px system-ui';
+		// Konva Text uses lineHeight=1 by default at fontSize=15 → ~18px is close
+		// enough for layout sizing without leaving big gaps inside the bubble.
+		const lineHeight = 18;
 
-		const size = this.measureTextSize(bubble.text || '', font);
+		// Cap content width to the panel's stage width so the bubble can never
+		// grow wider than its containing panel. Leave a small margin off the
+		// panel edges. Falls back to a sane default if the stage hasn't been
+		// measured yet (e.g. bubble created before ResizeObserver fires).
+		const stageW = this.activePanel?.stageW ?? 0;
+		const panelMargin = 16;
+		const fallbackMaxWidth = isCloud ? 220 : bubble.type === 'burst' ? 200 : 240;
+		const maxContentWidth =
+			stageW > 0
+				? Math.max(stageW - panelMargin - paddingH, 60)
+				: fallbackMaxWidth;
+
+		const lines = this.wrapText(bubble.text || '', font, maxContentWidth);
+
+		let widest = 0;
+		for (const line of lines) {
+			const w = this.measureTextSize(line, font).width;
+			if (w > widest) widest = w;
+		}
+		const contentW = Math.min(widest, maxContentWidth);
+		const contentH = Math.max(lines.length, 1) * lineHeight;
+
 		// Preserve sensible minimums for certain bubble types
 		const minWidth = bubble.type === 'burst' ? 160 : isCloud ? 100 : 50;
 		const minHeight = bubble.type === 'burst' ? 130 : isCloud ? 56 : 24;
-		bubble.width = Math.max(Math.ceil(size.width + paddingH), minWidth);
-		bubble.height = Math.max(Math.ceil(size.height + paddingV), minHeight);
+		bubble.width = Math.max(Math.ceil(contentW + paddingH), minWidth);
+		bubble.height = Math.max(Math.ceil(contentH + paddingV), minHeight);
+	}
+
+	// Soft-wrap text by word at maxWidth. Preserves explicit \n breaks from the
+	// user's textarea so pressing Enter forces a new line in the bubble.
+	private wrapText(text: string, font: string, maxWidth: number): string[] {
+		if (!browser) return [text];
+		if (!this._measureCanvas) {
+			this._measureCanvas = document.createElement('canvas');
+		}
+		const ctx = this._measureCanvas.getContext('2d');
+		if (!ctx) return [text];
+		ctx.font = font;
+
+		const result: string[] = [];
+		const paragraphs = text.split('\n');
+		for (const para of paragraphs) {
+			if (para === '') {
+				result.push('');
+				continue;
+			}
+			const words = para.split(/\s+/);
+			let current = '';
+			for (const word of words) {
+				const test = current === '' ? word : current + ' ' + word;
+				if (ctx.measureText(test).width > maxWidth && current !== '') {
+					result.push(current);
+					current = word;
+				} else {
+					current = test;
+				}
+			}
+			if (current !== '') result.push(current);
+		}
+		return result.length > 0 ? result : [''];
 	}
 
 	private measureTextSize(text: string, font: string): { width: number; height: number } {
