@@ -4,6 +4,7 @@
 	import type { ActionData, SubmitFunction } from './$types.js';
 	import PasswordLogin from '$lib/components/PasswordLogin.svelte';
 	import SignUp from '$lib/components/SignUp.svelte';
+	import Logo from '$lib/components/Logo.svelte';
 
 	interface Props {
 		form: ActionData;
@@ -33,14 +34,7 @@
 			<div class="hero-copy">
 				<div class="badge">✦ New — Comic creator v2</div>
 				<h1 class="hero-title">
-					<span class="z-mark" aria-hidden="true">
-						<span class="z-block z-top"></span>
-						<span class="z-block z-diag"></span>
-						<span class="z-block z-bottom"></span>
-					</span>
-					<span class="logo-text">
-						<span class="logo-zine">zine</span><span class="logo-mash">mash</span>
-					</span>
+					<Logo size="lg" />
 				</h1>
 				<p class="hero-sub">Mash your pages into a zine — drop photos, panels and doodles into a comic universe.</p>
 			</div>
@@ -279,69 +273,6 @@
 		gap: 1.1rem;
 		margin: 0;
 		line-height: 1;
-	}
-
-	/* Z mark — mirrors the navbar logo, scaled up for the hero */
-	.z-mark {
-		position: relative;
-		display: inline-block;
-		width: 76px;
-		height: 76px;
-		flex-shrink: 0;
-	}
-
-	.z-block {
-		position: absolute;
-		border: 3px solid #000;
-		box-shadow: 6px 6px 0 #000;
-	}
-
-	.z-top {
-		top: 0;
-		left: 0;
-		width: 64px;
-		height: 20px;
-		background: #facc15;
-		transform: rotate(-4deg);
-		z-index: 3;
-	}
-
-	.z-diag {
-		top: 28px;
-		left: 8px;
-		width: 60px;
-		height: 20px;
-		background: #06b6d4;
-		transform: rotate(-45deg);
-		transform-origin: center;
-		z-index: 2;
-	}
-
-	.z-bottom {
-		bottom: 0;
-		right: 0;
-		width: 64px;
-		height: 20px;
-		background: #ffffff;
-		transform: rotate(3deg);
-		z-index: 1;
-	}
-
-	.logo-text {
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: clamp(3rem, 7vw, 4.6rem);
-		font-weight: 800;
-		letter-spacing: -0.02em;
-		line-height: 1;
-		text-transform: lowercase;
-	}
-
-	.logo-zine {
-		color: #ffffff;
-	}
-
-	.logo-mash {
-		color: #06b6d4;
 	}
 
 	.hero-sub {
@@ -636,22 +567,6 @@
 		height: 18px;
 		flex-shrink: 0;
 		margin-top: 2px;
-	}
-
-	/* ── FOOTER ── */
-	.form-footer {
-		position: relative;
-		z-index: 1;
-		padding: 1.25rem 3rem 2rem;
-		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
-		font-size: 1rem;
-		color: #3f51b5;
-		text-align: center;
-		border-top: 2px dashed rgba(63, 81, 181, 0.3);
-	}
-
-	.heart {
-		color: #ef4444;
 	}
 
 	/* ── RESPONSIVE ── */

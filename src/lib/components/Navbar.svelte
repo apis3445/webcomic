@@ -2,6 +2,7 @@
 	import type { User } from '@supabase/supabase-js';
 	import { resolve } from '$app/paths';
 	import type { Attachment } from 'svelte/attachments';
+	import Logo from './Logo.svelte';
 
 	interface Props {
 		user: User | null;
@@ -56,14 +57,7 @@
 <header class="navbar">
 	<div class="navbar-inner">
 		<a href={resolve('/')} class="logo" aria-label="zinemash home">
-			<span class="z-mark" aria-hidden="true">
-				<span class="z-block z-top"></span>
-				<span class="z-block z-diag"></span>
-				<span class="z-block z-bottom"></span>
-			</span>
-			<span class="logo-text">
-				<span class="logo-zine">zine</span><span class="logo-mash">mash</span>
-			</span>
+			<Logo size="sm" />
 		</a>
 
 		<nav id="mobile-nav" class="nav-links" class:open={mobileNavOpen}>
@@ -235,69 +229,6 @@
 
 	.logo:hover {
 		transform: scale(1.05) rotate(-2deg);
-	}
-
-	/* Z mark: three independent blocks stacked like collaged photos */
-	.z-mark {
-		position: relative;
-		display: inline-block;
-		width: 38px;
-		height: 38px;
-		flex-shrink: 0;
-	}
-
-	.z-block {
-		position: absolute;
-		border: 2px solid #000;
-		box-shadow: 4px 4px 0 #000;
-	}
-
-	.z-top {
-		top: 0;
-		left: 0;
-		width: 32px;
-		height: 10px;
-		background: #facc15; /* bright yellow */
-		transform: rotate(-4deg);
-		z-index: 3;
-	}
-
-	.z-diag {
-		top: 14px;
-		left: 4px;
-		width: 30px;
-		height: 10px;
-		background: #06b6d4; /* electric cyan */
-		transform: rotate(-45deg);
-		transform-origin: center;
-		z-index: 2;
-	}
-
-	.z-bottom {
-		bottom: 0;
-		right: 0;
-		width: 32px;
-		height: 10px;
-		background: #ffffff;
-		transform: rotate(3deg);
-		z-index: 1;
-	}
-
-	.logo-text {
-		font-family: 'Inter', system-ui, sans-serif;
-		font-size: 1.65rem;
-		font-weight: 800;
-		letter-spacing: -0.02em;
-		line-height: 1;
-		text-transform: lowercase;
-	}
-
-	.logo-zine {
-		color: #ffffff;
-	}
-
-	.logo-mash {
-		color: #06b6d4;
 	}
 
 	.nav-links {
