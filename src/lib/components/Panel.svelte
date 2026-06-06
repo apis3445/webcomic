@@ -344,14 +344,32 @@
 	}
 
 	function observeSize(node: HTMLElement) {
+		let lastReflowWidth = 0;
+		let reflowTimer: ReturnType<typeof setTimeout> | null = null;
 		const observer = new ResizeObserver(() => {
 			width = node.clientWidth;
 			height = node.clientHeight;
-			comicState.panels[index].stageW = width;
-			comicState.panels[index].stageH = height;
+			const panel = comicState.panels[index];
+			if (!panel) return;
+			panel.stageW = width;
+			panel.stageH = height;
+			// Bubbles created before stageW was known used fallback caps; once
+			// the real width is in (or has changed meaningfully on resize),
+			// reflow them. Debounced so rapid resize events coalesce.
+			if (width > 0 && Math.abs(width - lastReflowWidth) > 2) {
+				if (reflowTimer) clearTimeout(reflowTimer);
+				reflowTimer = setTimeout(() => {
+					reflowTimer = null;
+					lastReflowWidth = width;
+					comicState.reflowPanelBubbles(index);
+				}, 100);
+			}
 		});
 		observer.observe(node);
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			if (reflowTimer) clearTimeout(reflowTimer);
+		};
 	}
 
 	// Scalloped thought-cloud outline: anchor points on an inner ellipse,
@@ -570,24 +588,22 @@
 									/>
 								{/if}
 
-								<!-- Speech Bubble Text -->
-								{@const isCloudT =
-									bubble.type === 'left-cloud' || bubble.type === 'right-cloud'}
-								{@const isOvalT = bubble.type === 'left-oval' || bubble.type === 'right-oval'}
-								{@const padH = isCloudT ? 32 : isOvalT ? 16 : 6}
-								{@const padV = isCloudT ? 14 : 6}
+								<!-- Speech Bubble Text — inner rect comes from comicState so
+									 the text area for irregular shapes (cloud, burst) matches the
+									 inscribed safe area inside the visible outline, not the bounding box. -->
+								{@const innerRect = comicState.bubbleInnerRect(bubble)}
 								<Text
-									text={bubble.text}
-									x={padH}
-									y={padV}
-									width={Math.max(bubble.width - padH * 2, 1)}
-									height={Math.max(bubble.height - padV * 2, 1)}
+									text={comicState.getWrappedBubbleText(bubble, width)}
+									x={innerRect.x}
+									y={innerRect.y}
+									width={innerRect.w}
+									height={innerRect.h}
 									fontSize={15}
 									fontStyle="bold"
 									fontFamily="system-ui, sans-serif"
 									align="center"
 									verticalAlign="middle"
-									wrap="word"
+									wrap="none"
 									lineHeight={1.2}
 									padding={0}
 									fill="#000000"

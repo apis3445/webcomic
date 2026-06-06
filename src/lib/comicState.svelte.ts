@@ -10,6 +10,11 @@ const PANEL_COUNTS: Record<TemplateId, number> = {
 
 const DEFAULT_PANEL_COUNT = 1;
 
+// Canvas font string used for both bubble text measurement (here) and
+// rendering (Panel.svelte's Konva <Text>). Keep these in sync so the
+// measured line breaks match what Konva actually draws.
+const BUBBLE_FONT = 'bold 15px system-ui';
+
 function getPanelCount(id: TemplateId): number {
 	const count = PANEL_COUNTS[id];
 	if (typeof count !== 'number' || count < 1) {
@@ -133,7 +138,7 @@ class ComicState {
 
 		// Resize to fit text when running in the browser
 		if (browser) {
-			this.resizeBubble(newBubble);
+			this.resizeBubble(newBubble, panel.stageW);
 		}
 
 		panel.bubbles = [...panel.bubbles, newBubble];
@@ -175,11 +180,12 @@ class ComicState {
 
 	updateActiveBubbleText(text: string) {
 		const bubble = this.activeBubble;
+		const panel = this.activePanel;
 		if (bubble) {
 			bubble.text = text;
 			// Resize to fit updated text when in browser
 			if (browser) {
-				this.resizeBubble(bubble);
+				this.resizeBubble(bubble, panel?.stageW ?? 0);
 			}
 			// Force Svelte Konva redraw by re-assigning bubbles array
 			if (this.activePanelIndex !== undefined) {
@@ -190,32 +196,39 @@ class ComicState {
 		}
 	}
 
+	// Recompute every bubble's size in the given panel against its current
+	// stageW. Called from Panel.svelte once the ResizeObserver reports a real
+	// width — bubbles created before that moment used fallback caps and need
+	// to reflow now that the true panel width is known. Cheap when stageW
+	// is unchanged: each bubble's size is fully determined by its text + the
+	// panel width, so we just write the same value back.
+	reflowPanelBubbles(panelIndex: number) {
+		if (!browser) return;
+		const panel = this.panels[panelIndex];
+		if (!panel || panel.bubbles.length === 0) return;
+		for (const bubble of panel.bubbles) {
+			this.resizeBubble(bubble, panel.stageW);
+		}
+		// Re-assign so svelte-konva sees the change and redraws.
+		panel.bubbles = [...panel.bubbles];
+	}
+
 	// Resize a bubble to fit its text content using an offscreen canvas measurement.
 	// Wraps long text at a max content width and respects explicit \n line breaks
 	// from the textarea so the bubble grows downward instead of stretching wide.
-	private resizeBubble(bubble: Bubble) {
+	// stageW is passed explicitly (not read from activePanel) so this can be
+	// called for any panel — e.g. from reflowPanelBubbles once the panel's
+	// ResizeObserver reports a real width.
+	private resizeBubble(bubble: Bubble, stageW: number) {
 		if (!browser) return;
 		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
-		const isOval = bubble.type === 'left-oval' || bubble.type === 'right-oval';
-		// Horizontal/vertical padding totals (both sides). Must match Panel.svelte's text inset.
-		const paddingH = (isCloud ? 32 : isOval ? 16 : 6) * 2;
-		const paddingV = (isCloud ? 14 : 6) * 2;
-		const font = 'bold 15px system-ui';
+		const isBurst = bubble.type === 'burst';
+		const font = BUBBLE_FONT;
 		// Konva Text uses lineHeight=1 by default at fontSize=15 → ~18px is close
 		// enough for layout sizing without leaving big gaps inside the bubble.
 		const lineHeight = 18;
 
-		// Cap content width to the panel's stage width so the bubble can never
-		// grow wider than its containing panel. Leave a small margin off the
-		// panel edges. Falls back to a sane default if the stage hasn't been
-		// measured yet (e.g. bubble created before ResizeObserver fires).
-		const stageW = this.activePanel?.stageW ?? 0;
-		const panelMargin = 16;
-		const fallbackMaxWidth = isCloud ? 220 : bubble.type === 'burst' ? 200 : 240;
-		const maxContentWidth =
-			stageW > 0
-				? Math.max(stageW - panelMargin - paddingH, 60)
-				: fallbackMaxWidth;
+		const maxContentWidth = this.bubbleMaxContentWidth(bubble, stageW);
 
 		const lines = this.wrapText(bubble.text || '', font, maxContentWidth);
 
@@ -227,15 +240,113 @@ class ComicState {
 		const contentW = Math.min(widest, maxContentWidth);
 		const contentH = Math.max(lines.length, 1) * lineHeight;
 
+		const bounds = this.boundsForContent(bubble, contentW, contentH);
+
 		// Preserve sensible minimums for certain bubble types
-		const minWidth = bubble.type === 'burst' ? 160 : isCloud ? 100 : 50;
-		const minHeight = bubble.type === 'burst' ? 130 : isCloud ? 56 : 24;
-		bubble.width = Math.max(Math.ceil(contentW + paddingH), minWidth);
-		bubble.height = Math.max(Math.ceil(contentH + paddingV), minHeight);
+		const minWidth = isBurst ? 160 : isCloud ? 100 : 50;
+		const minHeight = isBurst ? 130 : isCloud ? 56 : 24;
+		bubble.width = Math.max(bounds.w, minWidth);
+		bubble.height = Math.max(bounds.h, minHeight);
 	}
 
-	// Soft-wrap text by word at maxWidth. Preserves explicit \n breaks from the
-	// user's textarea so pressing Enter forces a new line in the bubble.
+	// Public helper: returns the bubble's text already wrapped to fit inside
+	// the bubble's content area. Panel.svelte joins these with '\n' and passes
+	// the result to Konva <Text wrap="none"> so what's drawn matches what was
+	// measured — no clipping for long unbroken tokens.
+	getWrappedBubbleText(bubble: Bubble, stageW: number): string {
+		const maxContentWidth = this.bubbleMaxContentWidth(bubble, stageW);
+		const lines = this.wrapText(bubble.text || '', BUBBLE_FONT, maxContentWidth);
+		return lines.join('\n');
+	}
+
+	// Shape-aware inner rect that lies inside the visible bubble outline (not
+	// just inside the bounding box). For irregular shapes (cloud, burst) the
+	// safe area is an inscribed rectangle in the inner ellipse / inner star;
+	// for rectangles/ovals it's the bounding box minus a fixed padding.
+	// Used by both the text renderer (Panel.svelte) and the sizing math here.
+	bubbleInnerRect(bubble: Bubble): { x: number; y: number; w: number; h: number } {
+		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
+		const isBurst = bubble.type === 'burst';
+		const isOval = bubble.type === 'left-oval' || bubble.type === 'right-oval';
+		// Cloud inner ellipse has axes ~0.4w × 0.38h (see buildCloudPath). The
+		// largest axis-aligned rectangle inscribed in that ellipse is a·√2 by
+		// b·√2 → ~0.566w × 0.537h. We pull in a touch further so the rounded
+		// puffs at the corners stay clear of the text.
+		if (isCloud) {
+			const w = bubble.width * 0.52;
+			const h = bubble.height * 0.5;
+			return { x: (bubble.width - w) / 2, y: (bubble.height - h) / 2, w, h };
+		}
+		// Burst: 12-point star with elliptical radii innerRx = 0.261·w and
+		// innerRy = 0.261·h. The largest axis-aligned rectangle inscribed in
+		// an ellipse (rx, ry) has half-dimensions rx/√2 × ry/√2, so the safe
+		// rect is ~0.37w × 0.37h of the bounding box. We use 0.36 for a 3%
+		// margin so the corners stay clear of the inner valleys at angles
+		// ±45°, ±135° where the boundary touches the inscribed ellipse.
+		if (isBurst) {
+			const w = bubble.width * 0.36;
+			const h = bubble.height * 0.36;
+			return { x: (bubble.width - w) / 2, y: (bubble.height - h) / 2, w, h };
+		}
+		const padH = isOval ? 16 : 6;
+		const padV = 6;
+		return {
+			x: padH,
+			y: padV,
+			w: Math.max(bubble.width - padH * 2, 1),
+			h: Math.max(bubble.height - padV * 2, 1)
+		};
+	}
+
+	// Inverse of bubbleInnerRect for sizing: given desired content dimensions,
+	// return the bubble bounds that will hold them.
+	private boundsForContent(
+		bubble: Bubble,
+		contentW: number,
+		contentH: number
+	): { w: number; h: number } {
+		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
+		const isBurst = bubble.type === 'burst';
+		const isOval = bubble.type === 'left-oval' || bubble.type === 'right-oval';
+		if (isCloud) {
+			return { w: Math.ceil(contentW / 0.52), h: Math.ceil(contentH / 0.5) };
+		}
+		if (isBurst) {
+			return { w: Math.ceil(contentW / 0.36), h: Math.ceil(contentH / 0.36) };
+		}
+		const padH = isOval ? 16 : 6;
+		const padV = 6;
+		return { w: Math.ceil(contentW + padH * 2), h: Math.ceil(contentH + padV * 2) };
+	}
+
+	// Max content width (inner safe area) before wrapping. Cap bubble width
+	// first to a comfortable reading width per type (so a bubble in a wide
+	// 16:7 hero panel doesn't span the whole panel), then convert that bubble
+	// width cap into a content width cap via the same shape factor used by
+	// bubbleInnerRect. stageW narrows the cap further when the panel is
+	// smaller than the absolute max.
+	private bubbleMaxContentWidth(bubble: Bubble, stageW: number): number {
+		const isCloud = bubble.type === 'left-cloud' || bubble.type === 'right-cloud';
+		const isBurst = bubble.type === 'burst';
+		const isOval = bubble.type === 'left-oval' || bubble.type === 'right-oval';
+		// Absolute bubble-width caps (px). Clouds and bursts need extra room
+		// because only ~52% (cloud) or 36% (burst) of the bounding box is
+		// actually usable for text after accounting for the shape outline.
+		const absoluteMaxBubbleW = isCloud ? 400 : isBurst ? 500 : 280;
+		const panelMargin = 16;
+		const panelCap =
+			stageW > 0 ? Math.max(stageW - panelMargin, 60) : absoluteMaxBubbleW;
+		const maxBubbleW = Math.min(absoluteMaxBubbleW, panelCap);
+		// Convert bubble-width cap into content-width cap (matches inner rect).
+		if (isCloud) return Math.max(maxBubbleW * 0.52, 40);
+		if (isBurst) return Math.max(maxBubbleW * 0.36, 40);
+		const padH = isOval ? 16 : 6;
+		return Math.max(maxBubbleW - padH * 2, 40);
+	}
+
+	// Soft-wrap text at maxWidth. Tries word boundaries first; if a single word
+	// is still wider than maxWidth (long URLs, "AAAA…"), splits that word at the
+	// character level so every produced line fits. Preserves explicit \n breaks.
 	private wrapText(text: string, font: string, maxWidth: number): string[] {
 		if (!browser) return [text];
 		if (!this._measureCanvas) {
@@ -255,6 +366,28 @@ class ComicState {
 			const words = para.split(/\s+/);
 			let current = '';
 			for (const word of words) {
+				// If the word itself is wider than the line, break it at character
+				// boundaries. The first chunk may need to combine with the current
+				// line; the remainder becomes its own lines.
+				if (ctx.measureText(word).width > maxWidth) {
+					const chunks = this.splitWordByChars(ctx, word, maxWidth);
+					for (let i = 0; i < chunks.length; i++) {
+						const chunk = chunks[i];
+						if (i === 0) {
+							const test = current === '' ? chunk : current + ' ' + chunk;
+							if (ctx.measureText(test).width > maxWidth && current !== '') {
+								result.push(current);
+								current = chunk;
+							} else {
+								current = test;
+							}
+						} else {
+							if (current !== '') result.push(current);
+							current = chunk;
+						}
+					}
+					continue;
+				}
 				const test = current === '' ? word : current + ' ' + word;
 				if (ctx.measureText(test).width > maxWidth && current !== '') {
 					result.push(current);
@@ -266,6 +399,27 @@ class ComicState {
 			if (current !== '') result.push(current);
 		}
 		return result.length > 0 ? result : [''];
+	}
+
+	// Greedily slice an over-long word into char chunks that each fit maxWidth.
+	private splitWordByChars(
+		ctx: CanvasRenderingContext2D,
+		word: string,
+		maxWidth: number
+	): string[] {
+		const chunks: string[] = [];
+		let current = '';
+		for (const ch of word) {
+			const next = current + ch;
+			if (ctx.measureText(next).width > maxWidth && current !== '') {
+				chunks.push(current);
+				current = ch;
+			} else {
+				current = next;
+			}
+		}
+		if (current !== '') chunks.push(current);
+		return chunks.length > 0 ? chunks : [word];
 	}
 
 	private measureTextSize(text: string, font: string): { width: number; height: number } {
