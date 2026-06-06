@@ -673,9 +673,9 @@
 <!-- Print View -->
 <div class="print-only">
 	<div class="print-comic-grid" class:print-template-page={comicState.templateId === 'page-1-2-3'}>
-		{#each printImageUrls as url, i (i)}
-			{#if url}
-				<img src={url} alt="Panel {i + 1}" class="print-panel" />
+		{#each comicState.panels as panel, i (i)}
+			{#if panel.bgImageUrl}
+				<img src={panel.bgImageUrl} alt="Panel {i + 1}" class="print-panel" />
 			{:else}
 				<div class="print-panel print-panel-empty"></div>
 			{/if}
