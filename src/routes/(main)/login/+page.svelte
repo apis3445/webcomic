@@ -32,7 +32,16 @@
 		<div class="hero-left">
 			<div class="hero-copy">
 				<div class="badge">✦ New — Comic creator v2</div>
-				<h1 class="hero-title">Zinemash</h1>
+				<h1 class="hero-title">
+					<span class="z-mark" aria-hidden="true">
+						<span class="z-block z-top"></span>
+						<span class="z-block z-diag"></span>
+						<span class="z-block z-bottom"></span>
+					</span>
+					<span class="logo-text">
+						<span class="logo-zine">zine</span><span class="logo-mash">mash</span>
+					</span>
+				</h1>
 				<p class="hero-sub">Mash your pages into a zine — drop photos, panels and doodles into a comic universe.</p>
 			</div>
 		</div>
@@ -193,9 +202,6 @@
 				</div>
 			</div>
 
-			<footer class="form-footer">
-				Made with <span class="heart">❤️</span> for creators by Abi
-			</footer>
 		</div>
 	</section>
 </div>
@@ -268,18 +274,74 @@
 	}
 
 	.hero-title {
-		font-family: 'Bangers', cursive;
-		font-size: clamp(4rem, 8vw, 6rem);
-		line-height: 0.9;
+		display: flex;
+		align-items: center;
+		gap: 1.1rem;
 		margin: 0;
-		letter-spacing: 0.05em;
-		white-space: nowrap;
-		color: #fef08a;
-		-webkit-text-stroke: 3px #000;
-		text-shadow:
-			5px 5px 0 #4a0080,
-			9px 9px 0 rgba(74, 0, 128, 0.45);
-		paint-order: stroke fill;
+		line-height: 1;
+	}
+
+	/* Z mark — mirrors the navbar logo, scaled up for the hero */
+	.z-mark {
+		position: relative;
+		display: inline-block;
+		width: 76px;
+		height: 76px;
+		flex-shrink: 0;
+	}
+
+	.z-block {
+		position: absolute;
+		border: 3px solid #000;
+		box-shadow: 6px 6px 0 #000;
+	}
+
+	.z-top {
+		top: 0;
+		left: 0;
+		width: 64px;
+		height: 20px;
+		background: #facc15;
+		transform: rotate(-4deg);
+		z-index: 3;
+	}
+
+	.z-diag {
+		top: 28px;
+		left: 8px;
+		width: 60px;
+		height: 20px;
+		background: #06b6d4;
+		transform: rotate(-45deg);
+		transform-origin: center;
+		z-index: 2;
+	}
+
+	.z-bottom {
+		bottom: 0;
+		right: 0;
+		width: 64px;
+		height: 20px;
+		background: #ffffff;
+		transform: rotate(3deg);
+		z-index: 1;
+	}
+
+	.logo-text {
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: clamp(3rem, 7vw, 4.6rem);
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		line-height: 1;
+		text-transform: lowercase;
+	}
+
+	.logo-zine {
+		color: #ffffff;
+	}
+
+	.logo-mash {
+		color: #06b6d4;
 	}
 
 	.hero-sub {
