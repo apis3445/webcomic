@@ -4,6 +4,7 @@
 	import type { ActionData, SubmitFunction } from './$types.js';
 	import PasswordLogin from '$lib/components/PasswordLogin.svelte';
 	import SignUp from '$lib/components/SignUp.svelte';
+	import Logo from '$lib/components/Logo.svelte';
 
 	interface Props {
 		form: ActionData;
@@ -32,7 +33,9 @@
 		<div class="hero-left">
 			<div class="hero-copy">
 				<div class="badge">✦ New — Comic creator v2</div>
-				<h1 class="hero-title">Zinemash</h1>
+				<h1 class="hero-title">
+					<Logo size="lg" />
+				</h1>
 				<p class="hero-sub">Mash your pages into a zine — drop photos, panels and doodles into a comic universe.</p>
 			</div>
 		</div>
@@ -193,9 +196,6 @@
 				</div>
 			</div>
 
-			<footer class="form-footer">
-				Made with <span class="heart">❤️</span> for creators by Abi
-			</footer>
 		</div>
 	</section>
 </div>
@@ -268,18 +268,11 @@
 	}
 
 	.hero-title {
-		font-family: 'Bangers', cursive;
-		font-size: clamp(4rem, 8vw, 6rem);
-		line-height: 0.9;
+		display: flex;
+		align-items: center;
+		gap: 1.1rem;
 		margin: 0;
-		letter-spacing: 0.05em;
-		white-space: nowrap;
-		color: #fef08a;
-		-webkit-text-stroke: 3px #000;
-		text-shadow:
-			5px 5px 0 #4a0080,
-			9px 9px 0 rgba(74, 0, 128, 0.45);
-		paint-order: stroke fill;
+		line-height: 1;
 	}
 
 	.hero-sub {
@@ -574,22 +567,6 @@
 		height: 18px;
 		flex-shrink: 0;
 		margin-top: 2px;
-	}
-
-	/* ── FOOTER ── */
-	.form-footer {
-		position: relative;
-		z-index: 1;
-		padding: 1.25rem 3rem 2rem;
-		font-family: 'Patrick Hand', 'Comic Neue', sans-serif;
-		font-size: 1rem;
-		color: #3f51b5;
-		text-align: center;
-		border-top: 2px dashed rgba(63, 81, 181, 0.3);
-	}
-
-	.heart {
-		color: #ef4444;
 	}
 
 	/* ── RESPONSIVE ── */
