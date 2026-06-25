@@ -124,13 +124,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return null;
 	}
 
-	const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+	// No webp: the public-comics bucket rejects image/webp, so a webp panel
+	// image uploads fine but then fails every publish. Reject it up front.
+	const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/gif']);
 	const detected = detectImageMime(uint8);
 	if (!detected || !ALLOWED.has(detected)) {
-		return new Response(
-			JSON.stringify({ error: 'Only image files are allowed (jpg, png, webp, gif).' }),
-			{ status: 400 }
-		);
+		return new Response(JSON.stringify({ error: 'Only jpg, png and gif images are allowed.' }), {
+			status: 400
+		});
 	}
 	const mime = detected;
 
@@ -196,7 +197,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const widthVal = widthStr ? parseInt(widthStr, 10) : null;
 	const heightVal = heightStr ? parseInt(heightStr, 10) : null;
 
-	// Insert image metadata (include width/height if provided)
+	// Insert image metadata (include width/height if provided).
+	// public_url is explicitly cleared: when this upsert replaces a panel's
+	// image, the old published copy no longer matches — publish skips rows
+	// that already have a public_url, so leaving the stale one in place would
+	// pin the public site to the old image forever.
 	const imageRow: any = {
 		panel_id: panelId,
 		sheet_id: sheetId,
@@ -205,21 +210,48 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		bucket: 'comics',
 		filename: file.name,
 		mime,
-		uploaded_by: userId
+		uploaded_by: userId,
+		public_url: null
 	};
 	if (typeof widthVal === 'number' && !Number.isNaN(widthVal)) imageRow.width = widthVal;
 	if (typeof heightVal === 'number' && !Number.isNaN(heightVal)) imageRow.height = heightVal;
 
+	// Capture the prior storage path before upsert overwrites it — we need it
+	// to delete the old file from the bucket. One panel → one image row,
+	// enforced by the UNIQUE constraint on images.panel_id.
+	const { data: priorImage, error: priorImgErr } = await locals.supabase
+		.from('images')
+		.select('storage_path, bucket')
+		.eq('panel_id', panelId)
+		.maybeSingle();
+	if (priorImgErr) {
+		console.error('Failed to read prior image row', priorImgErr);
+		return new Response(JSON.stringify({ error: priorImgErr.message }), { status: 500 });
+	}
+
 	const { data: imgData, error: imgErr } = await locals.supabase
 		.from('images')
-		.insert(imageRow)
+		.upsert(imageRow, { onConflict: 'panel_id' })
 		.select('*')
 		.single();
 	if (imgErr || !imgData) {
-		console.error('Images insert error', imgErr);
-		return new Response(JSON.stringify({ error: imgErr?.message ?? 'images insert failed' }), {
+		console.error('Images upsert error', imgErr);
+		return new Response(JSON.stringify({ error: imgErr?.message ?? 'images upsert failed' }), {
 			status: 500
 		});
+	}
+
+	// Remove the prior storage object now that the DB row points at the new
+	// path. Failures are logged but don't fail the request: an orphan file is
+	// recoverable, a failed save isn't.
+	const priorPath = (priorImage as { storage_path?: string | null } | null)?.storage_path ?? null;
+	const priorBucket =
+		((priorImage as { bucket?: string | null } | null)?.bucket ?? null) || 'comics';
+	if (priorPath && priorPath !== relativePath) {
+		const { error: rmErr } = await locals.supabase.storage.from(priorBucket).remove([priorPath]);
+		if (rmErr) {
+			console.warn('Failed to remove prior storage object', { priorBucket, priorPath, rmErr });
+		}
 	}
 
 	return new Response(

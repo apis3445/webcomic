@@ -2,7 +2,9 @@
 	import { browser } from '$app/environment';
 	import { Stage, Layer, Image, Group, Text, Circle, Line, Path } from 'svelte-konva';
 	import type { KonvaEventObject } from 'konva/lib/Node';
+	import type { Stage as KonvaStage } from 'konva/lib/Stage';
 	import { comicState } from '../comicState.svelte';
+	import { registerPanelStage } from '../panelStages';
 	// Server-backed upload flow: POST FormData to /api/upload-image and create comics via /api/comics
 	// (using event.locals.supabase on the server)
 
@@ -11,6 +13,14 @@
 	let width = $state(0);
 	let height = $state(0);
 	let fileInput: HTMLInputElement | undefined;
+	// svelte-konva exposes the underlying Konva stage as an exported `node`.
+	let stageRef = $state<{ node: KonvaStage } | undefined>(undefined);
+
+	// Expose this panel's stage to the print/export flow (see panelStages.ts).
+	$effect(() => {
+		registerPanelStage(index, stageRef?.node ?? null);
+		return () => registerPanelStage(index, null);
+	});
 	let uploading = $state(false);
 	let uploadError = $state<string | null>(null);
 	let errorTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -52,20 +62,14 @@
 	);
 	const isActivePanel = $derived(comicState.activePanelIndex === index);
 
-	// Must match the ALLOWED set in src/routes/api/upload-image/+server.ts
-	const ALLOWED_IMAGE_MIME = new Set([
-		'image/jpeg',
-		'image/png',
-		'image/webp',
-		'image/gif'
-	]);
+	// Must match the ALLOWED set in src/routes/api/upload-image/+server.ts.
+	// No webp: the public-comics bucket rejects it, which breaks publishing.
+	const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif']);
 
 	function isAllowedImage(file: File): boolean {
 		if (file.type && ALLOWED_IMAGE_MIME.has(file.type)) return true;
 		const ext = file.name.toLowerCase().split('.').pop();
-		return (
-			ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif'
-		);
+		return ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif';
 	}
 
 	function dragOver(e: DragEvent) {
@@ -77,7 +81,7 @@
 		const file = e.dataTransfer?.files[0];
 		if (!file) return;
 		if (!isAllowedImage(file)) {
-			showUploadError('Only image files are allowed (jpg, png, webp, gif).');
+			showUploadError('Only jpg, png and gif images are allowed.');
 			return;
 		}
 		await uploadImageServer(file, index);
@@ -88,7 +92,7 @@
 		const file = input.files?.[0];
 		if (file) {
 			if (!isAllowedImage(file)) {
-				showUploadError('Only image files are allowed (jpg, png, webp, gif).');
+				showUploadError('Only jpg, png and gif images are allowed.');
 			} else {
 				await uploadImageServer(file, index);
 			}
@@ -132,10 +136,7 @@
 					body: JSON.stringify({ name: 'Untitled', description: '' })
 				});
 				if (!res.ok) {
-					const msg = await readErrorMessage(
-						res,
-						'Could not create your comic. Please try again.'
-					);
+					const msg = await readErrorMessage(res, 'Could not create your comic. Please try again.');
 					console.error('Failed to create comic', { status: res.status });
 					showUploadError(msg);
 					return;
@@ -259,7 +260,7 @@
 			const form = new FormData();
 			form.append('file', file);
 			form.append('panelIndex', String(panelIndex + 1));
-			form.append('sheetNumber', '1');
+			form.append('sheetNumber', String(comicState.sheetNumber));
 			// comicId is guaranteed to be set above; assert non-null to satisfy TypeScript
 			form.append('comicId', comicId!);
 			if (width > 0) form.append('width', String(width));
@@ -477,7 +478,7 @@
 	<input
 		bind:this={fileInput}
 		type="file"
-		accept="image/jpeg,image/png,image/webp,image/gif"
+		accept="image/jpeg,image/png,image/gif"
 		onchange={handleFileSelect}
 		style="display: none;"
 	/>
@@ -514,7 +515,7 @@
 				ondragover={dragOver}
 				ondrop={drop}
 			>
-				<Stage {width} {height} onclick={handleStageClick}>
+				<Stage bind:this={stageRef} {width} {height} onclick={handleStageClick}>
 					<!-- Background layer kept separate from bubbles so the bg image,
 						 which mounts asynchronously after decode, can't end up drawn
 						 on top of bubbles that hydrated synchronously. -->

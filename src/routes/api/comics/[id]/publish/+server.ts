@@ -54,6 +54,13 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 	// Accept optional payload with template and panels/bubbles to persist before publishing
 	const payload: any = await request.json().catch(() => null);
 
+	// Page the client was editing when it hit Publish (sheets.number).
+	// Older clients never send it — default to 1.
+	const sheetNumber =
+		payload && Number.isInteger(payload.sheetNumber) && payload.sheetNumber >= 1
+			? Math.min(payload.sheetNumber, 100)
+			: 1;
+
 	if (payload && (payload.templateId || payload.panels)) {
 		try {
 			const isUuid = (s: any) =>
@@ -76,14 +83,14 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				}
 			}
 
-			// Ensure sheet #1 exists. Throw on any error so the surrounding catch
-			// logs the failure and skips the pre-persist block entirely (publish
-			// can still proceed against existing DB rows).
+			// Ensure the target sheet (page) exists. Throw on any error so the
+			// surrounding catch logs the failure and skips the pre-persist block
+			// entirely (publish can still proceed against existing DB rows).
 			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
 				.from('sheets')
 				.select('id')
 				.eq('comic_id', comicId)
-				.eq('number', 1)
+				.eq('number', sheetNumber)
 				.maybeSingle();
 			if (sheetSelectErr) {
 				throw new Error(`sheet select failed: ${sheetSelectErr.message}`);
@@ -94,7 +101,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 					.from('sheets')
 					.insert({
 						comic_id: comicId,
-						number: 1,
+						number: sheetNumber,
 						template_id: safeTemplateIdPub
 					})
 					.select('id')
@@ -206,9 +213,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
-						const { error: bubbleInsErr } = await locals.supabase
-							.from('bubbles')
-							.insert(toInsert);
+						const { error: bubbleInsErr } = await locals.supabase.from('bubbles').insert(toInsert);
 						if (bubbleInsErr) console.error('publish: bubble insert failed', bubbleInsErr);
 					}
 				}
@@ -254,12 +259,41 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.from(bucket)
 				.download(path);
 			if (dlErr || !downloaded) {
-				const e = (dlErr ?? {}) as { message?: string; status?: number; name?: string };
+				const e = (dlErr ?? {}) as {
+					message?: string;
+					status?: number;
+					statusCode?: string | number;
+					name?: string;
+				};
+				// Orphaned row: the storage object is gone (e.g. it was replaced
+				// and the old file deleted while a legacy duplicate row still
+				// pointed at it) and nothing public references it. Drop the row
+				// instead of failing — otherwise one orphan permanently blocks
+				// publishing the whole comic. The panel simply renders without
+				// an image until the user re-uploads one.
+				const notFound =
+					e.status === 404 ||
+					e.statusCode === 404 ||
+					e.statusCode === '404' ||
+					/not.?found/i.test(e.message ?? '');
+				if (notFound) {
+					console.warn('[publish]', reqId, 'orphaned_image_dropped', {
+						image_id: img.id,
+						...(dev ? { path } : {})
+					});
+					const { error: delErr } = await locals.supabase.from('images').delete().eq('id', img.id);
+					if (delErr) {
+						console.error('[publish]', reqId, 'orphaned_image_delete_failed', {
+							image_id: img.id
+						});
+					}
+					continue;
+				}
 				console.error('[publish]', reqId, 'image_download', {
 					image_id: img.id,
 					status: e.status,
 					name: e.name,
-					...(dev ? { message: e.message } : {})
+					...(dev ? { message: e.message, path } : {})
 				});
 				results.push({ id: img.id, failed: true });
 				failedCount++;

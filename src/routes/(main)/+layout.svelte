@@ -23,4 +23,18 @@
 		flex: 1;
 		padding-bottom: 40px;
 	}
+
+	/* Hide site chrome when printing (e.g. the comic editor's print view) —
+	   only the page's own print content should reach paper. :global because
+	   the navbar/footer roots live inside child components. */
+	@media print {
+		.layout :global(.navbar),
+		.layout :global(.footer) {
+			display: none !important;
+		}
+
+		.layout-content {
+			padding-bottom: 0;
+		}
+	}
 </style>

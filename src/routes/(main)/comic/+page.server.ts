@@ -51,11 +51,19 @@ export interface LoadedPanel {
 	bubbles: Bubble[];
 }
 
+export interface LoadedSheet {
+	number: number;
+	templateSlug: string | null;
+	panels: LoadedPanel[];
+}
+
 export interface LoadedComic {
 	id: string;
 	name: string | null;
-	templateSlug: string | null;
-	panels: LoadedPanel[];
+	thumbnailUrl: string | null;
+	// Pages in ascending sheets.number order; always at least one entry so the
+	// editor has a page to load.
+	sheets: LoadedSheet[];
 }
 
 const KNOWN_BUBBLE_TYPES: ReadonlySet<BubbleType> = new Set<BubbleType>([
@@ -97,18 +105,20 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		.order('number', { ascending: true });
 	const sheets = (sheetsRaw ?? []) as SheetRow[];
 
-	// Resolve template slug via explicit lookup. Avoids relying on a PostgREST
-	// embedded join, which silently returns null when the FK constraint between
-	// sheets.template_id and sheet_templates.id is missing.
-	let templateSlug: string | null = null;
-	const firstTemplateId = sheets.find((s) => s.template_id)?.template_id;
-	if (firstTemplateId) {
-		const { data: tmpl } = await locals.supabase
+	// Resolve template slugs via explicit lookup (one query for all sheets).
+	// Avoids relying on a PostgREST embedded join, which silently returns null
+	// when the FK constraint between sheets.template_id and sheet_templates.id
+	// is missing.
+	const templateIds = [...new Set(sheets.map((s) => s.template_id).filter(Boolean))] as string[];
+	const slugByTemplateId = new Map<string, string | null>();
+	if (templateIds.length) {
+		const { data: tmpls } = await locals.supabase
 			.from('sheet_templates')
-			.select('slug')
-			.eq('id', firstTemplateId)
-			.maybeSingle();
-		templateSlug = (tmpl as { slug: string | null } | null)?.slug ?? null;
+			.select('id, slug')
+			.in('id', templateIds);
+		for (const t of (tmpls ?? []) as Array<{ id: string; slug: string | null }>) {
+			slugByTemplateId.set(t.id, t.slug);
+		}
 	}
 
 	const sheetIds = sheets.map((s) => s.id);
@@ -141,7 +151,6 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 
 	const imageUrlByPanel = new Map<string, string | null>();
 	for (const img of images) {
-		if (imageUrlByPanel.has(img.panel_id)) continue;
 		let url: string | null = img.public_url ?? null;
 		if (!url && img.storage_path) {
 			const { data } = await locals.supabase.storage
@@ -159,29 +168,48 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		bubblesByPanel.set(b.panel_id, list);
 	}
 
-	const panelData: LoadedPanel[] = panels.map((p, i) => ({
+	const toLoadedPanel = (p: PanelRow, i: number): LoadedPanel => ({
 		index: typeof p.index === 'number' ? p.index : i + 1,
 		imageUrl: imageUrlByPanel.get(p.id) ?? null,
-		bubbles: (bubblesByPanel.get(p.id) ?? []).map((b, bi): Bubble => ({
-			id: bi + 1,
-			text: b.text ?? '',
-			x: b.x ?? 0,
-			y: b.y ?? 0,
-			width: b.w ?? 140,
-			height: b.h ?? 50,
-			type: toBubbleType(b.style),
-			// Fallback to insertion order so legacy bubbles (all z_index=0) get
-			// a deterministic, stable order on first reload instead of "whatever
-			// the DB returned this time".
-			z_index: typeof b.z_index === 'number' ? b.z_index : bi
-		}))
+		bubbles: (bubblesByPanel.get(p.id) ?? []).map(
+			(b, bi): Bubble => ({
+				id: bi + 1,
+				text: b.text ?? '',
+				x: b.x ?? 0,
+				y: b.y ?? 0,
+				width: b.w ?? 140,
+				height: b.h ?? 50,
+				type: toBubbleType(b.style),
+				// Fallback to insertion order so legacy bubbles (all z_index=0) get
+				// a deterministic, stable order on first reload instead of "whatever
+				// the DB returned this time".
+				z_index: typeof b.z_index === 'number' ? b.z_index : bi
+			})
+		)
+	});
+
+	const loadedSheets: LoadedSheet[] = sheets.map((s) => ({
+		number: s.number,
+		templateSlug: s.template_id ? (slugByTemplateId.get(s.template_id) ?? null) : null,
+		panels: panels.filter((p) => p.sheet_id === s.id).map(toLoadedPanel)
 	}));
+	if (loadedSheets.length === 0) {
+		loadedSheets.push({ number: 1, templateSlug: null, panels: [] });
+	}
+
+	let thumbnailUrl: string | null = null;
+	if (comic.thumbnail_path) {
+		const { data } = await locals.supabase.storage
+			.from('comics')
+			.createSignedUrl(comic.thumbnail_path, 60 * 60 * 24);
+		thumbnailUrl = data?.signedUrl ?? null;
+	}
 
 	const loaded: LoadedComic = {
 		id: comic.id,
 		name: comic.name,
-		templateSlug,
-		panels: panelData
+		thumbnailUrl,
+		sheets: loadedSheets
 	};
 
 	return { comic: loaded };

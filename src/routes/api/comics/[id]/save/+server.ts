@@ -47,6 +47,14 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 
 	const payload: any = await request.json().catch(() => null);
 
+	// Page being saved (sheets.number). Defaults to 1 for older clients that
+	// never send it. Clamped to a sane range so a bad payload can't create
+	// absurd sheet numbers.
+	const sheetNumber =
+		payload && Number.isInteger(payload.sheetNumber) && payload.sheetNumber >= 1
+			? Math.min(payload.sheetNumber, 100)
+			: 1;
+
 	// Update comic metadata if provided
 	if (payload && typeof payload.name === 'string') {
 		const { error: updErr } = await locals.supabase
@@ -80,12 +88,12 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		}
 
 		if (payload && (payload.templateId || Array.isArray(payload.panels))) {
-			// Ensure sheet #1 exists
+			// Ensure the target sheet (page) exists
 			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
 				.from('sheets')
 				.select('id')
 				.eq('comic_id', comicId)
-				.eq('number', 1)
+				.eq('number', sheetNumber)
 				.maybeSingle();
 			if (sheetSelectErr) {
 				console.error('[save]', reqId, 'sheet select failed', sheetSelectErr);
@@ -95,7 +103,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 			if (!sheetRow) {
 				const { data: newSheet, error: newSheetErr } = await locals.supabase
 					.from('sheets')
-					.insert({ comic_id: comicId, number: 1, template_id: safeTemplateId })
+					.insert({ comic_id: comicId, number: sheetNumber, template_id: safeTemplateId })
 					.select('id')
 					.single();
 				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
@@ -217,9 +225,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
-						const { error: bubbleInsErr } = await locals.supabase
-							.from('bubbles')
-							.insert(toInsert);
+						const { error: bubbleInsErr } = await locals.supabase.from('bubbles').insert(toInsert);
 						if (bubbleInsErr) {
 							return saveErrorResponse(reqId, 'bubble_insert', bubbleInsErr);
 						}

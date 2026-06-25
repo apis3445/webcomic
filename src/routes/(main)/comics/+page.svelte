@@ -54,6 +54,12 @@
 		goto(resolve(`/comic?id=${c.id}`));
 	}
 
+	// Opens the editor's wizard directly on the cover step to change
+	// the title and/or cover image.
+	function editDetails(c: ComicSummary) {
+		goto(resolve(`/comic?id=${c.id}&step=cover`));
+	}
+
 	function createNewComic() {
 		goto(resolve('/comic'));
 	}
@@ -76,13 +82,26 @@
 
 	{#if deleteError}
 		<div class="delete-error" role="alert" aria-live="assertive">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+			<svg
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2.2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+			>
 				<circle cx="12" cy="12" r="10" />
 				<line x1="12" y1="8" x2="12" y2="12" />
 				<line x1="12" y1="16" x2="12.01" y2="16" />
 			</svg>
 			<span>{deleteError}</span>
-			<button type="button" class="delete-error-close" onclick={dismissDeleteError} aria-label="Dismiss">×</button>
+			<button
+				type="button"
+				class="delete-error-close"
+				onclick={dismissDeleteError}
+				aria-label="Dismiss">×</button
+			>
 		</div>
 	{/if}
 
@@ -109,7 +128,15 @@
 
 					<div class="card-body">
 						<div class="card-meta">
-							<span class="card-name">{c.name}</span>
+							<span class="card-name">
+								{c.name}
+								<button
+									class="card-name-edit"
+									onclick={() => editDetails(c)}
+									title="Change title & cover"
+									aria-label="Change title & cover for {c.name}">✎</button
+								>
+							</span>
 							<div class="card-badges">
 								{#if c.is_public}
 									<span class="badge badge-public">Public</span>
@@ -274,7 +301,9 @@
 		display: flex;
 		flex-direction: column;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-		transition: box-shadow 0.18s, transform 0.18s;
+		transition:
+			box-shadow 0.18s,
+			transform 0.18s;
 	}
 
 	.comic-card:hover {
@@ -332,6 +361,30 @@
 		color: #0f172a;
 		line-height: 1.3;
 		word-break: break-word;
+	}
+
+	.card-name-edit {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		vertical-align: middle;
+		width: 22px;
+		height: 22px;
+		margin-left: 4px;
+		border: 1px solid #e2e8f0;
+		border-radius: 5px;
+		background: #fff;
+		color: #64748b;
+		font-size: 0.75rem;
+		cursor: pointer;
+		transition:
+			border-color 0.12s,
+			color 0.12s;
+	}
+
+	.card-name-edit:hover {
+		border-color: #007f8a;
+		color: #007f8a;
 	}
 
 	.card-badges {

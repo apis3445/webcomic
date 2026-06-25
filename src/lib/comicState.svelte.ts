@@ -1,30 +1,12 @@
 import { browser } from '$app/environment';
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import { DEFAULT_TEMPLATE_ID, getTemplate, resolveTemplateId, type TemplateId } from './templates';
 
-export type TemplateId = 'grid-3x3' | 'page-1-2-3';
-
-const PANEL_COUNTS: Record<TemplateId, number> = {
-	'grid-3x3': 9,
-	'page-1-2-3': 6
-};
-
-const DEFAULT_PANEL_COUNT = 1;
+export type { TemplateId } from './templates';
 
 // Canvas font string used for both bubble text measurement (here) and
 // rendering (Panel.svelte's Konva <Text>). Keep these in sync so the
 // measured line breaks match what Konva actually draws.
 const BUBBLE_FONT = 'bold 15px system-ui';
-
-function getPanelCount(id: TemplateId): number {
-	const count = PANEL_COUNTS[id];
-	if (typeof count !== 'number' || count < 1) {
-		console.warn(
-			`Unknown or invalid panel count for template "${id}", falling back to ${DEFAULT_PANEL_COUNT}`
-		);
-		return DEFAULT_PANEL_COUNT;
-	}
-	return count;
-}
 
 export type BubbleType =
 	| 'left-cloud'
@@ -58,8 +40,7 @@ export interface PanelState {
 }
 
 function createPanels(count: number): PanelState[] {
-	const safeCount =
-		typeof count === 'number' && count >= 1 ? Math.floor(count) : DEFAULT_PANEL_COUNT;
+	const safeCount = typeof count === 'number' && count >= 1 ? Math.floor(count) : 1;
 	return Array.from({ length: safeCount }, () => ({
 		bgImage: undefined,
 		bgImageUrl: '',
@@ -70,11 +51,11 @@ function createPanels(count: number): PanelState[] {
 }
 
 class ComicState {
-	templateId = $state<TemplateId>('grid-3x3');
+	templateId = $state<TemplateId>(DEFAULT_TEMPLATE_ID);
 	activePanelIndex = $state<number | undefined>(0);
 	activeBubbleId = $state<number | undefined>(undefined);
 
-	panels = $state<PanelState[]>(createPanels(9));
+	panels = $state<PanelState[]>(createPanels(getTemplate(DEFAULT_TEMPLATE_ID).panelCount));
 
 	private _measureCanvas: HTMLCanvasElement | undefined;
 
@@ -82,6 +63,10 @@ class ComicState {
 	comicId = $state<string | null>(null);
 	// Title of the comic (editable by user)
 	title = $state<string>('Untitled');
+	// Page (sheets.number) currently loaded in the editor. The editor holds one
+	// page at a time; switching pages saves the current one and loads another
+	// via loadSheet(). Uploads and saves target this sheet.
+	sheetNumber = $state<number>(1);
 
 	setComicId(id: string) {
 		this.comicId = id;
@@ -159,10 +144,7 @@ class ComicState {
 		const panel = this.activePanel;
 		const bubble = this.activeBubble;
 		if (!panel || !bubble) return;
-		const bottomZ = panel.bubbles.reduce(
-			(min, b) => Math.min(min, b.z_index ?? 0),
-			bubble.z_index
-		);
+		const bottomZ = panel.bubbles.reduce((min, b) => Math.min(min, b.z_index ?? 0), bubble.z_index);
 		if (bubble.z_index === bottomZ) return;
 		bubble.z_index = bottomZ - 1;
 		panel.bubbles = [...panel.bubbles];
@@ -334,8 +316,7 @@ class ComicState {
 		// actually usable for text after accounting for the shape outline.
 		const absoluteMaxBubbleW = isCloud ? 400 : isBurst ? 500 : 280;
 		const panelMargin = 16;
-		const panelCap =
-			stageW > 0 ? Math.max(stageW - panelMargin, 60) : absoluteMaxBubbleW;
+		const panelCap = stageW > 0 ? Math.max(stageW - panelMargin, 60) : absoluteMaxBubbleW;
 		const maxBubbleW = Math.min(absoluteMaxBubbleW, panelCap);
 		// Convert bubble-width cap into content-width cap (matches inner rect).
 		if (isCloud) return Math.max(maxBubbleW * 0.52, 40);
@@ -458,52 +439,67 @@ class ComicState {
 		const previousUrl = panel.bgImageUrl;
 
 		return new Promise<void>((resolve, reject) => {
-			const img = new window.Image();
-			// Intentionally not setting img.crossOrigin = 'Anonymous'. CORS is only
-			// required if we ever read pixel data via canvas.toDataURL/getImageData
-			// (we don't — Konva just displays). Forcing CORS would trip a preflight
-			// and silently fail on storage URLs lacking strict CORS headers.
-			img.onload = () => {
-				// onload fires once bytes are in, but the image may still fail to
-				// decode (corrupt payload, unsupported pixel format, exceeds the
-				// platform's max bitmap size). decode() surfaces those explicitly
-				// instead of letting Konva paint a broken image silently.
-				img.decode().then(
-					() => {
-						panel.bgImage = img;
-						panel.bgImageUrl = url;
-						// Force reactive refresh
-						this.panels = [...this.panels];
-						resolve();
-						// Defer revoking the previous blob URL until after the current
-						// render cycle commits — revoking synchronously here races with
-						// Konva/Svelte still reading from the old src during the swap,
-						// which can blank the panel for a frame. http(s) URLs untouched.
-						if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) {
-							const raf =
-								typeof requestAnimationFrame === 'function'
-									? requestAnimationFrame
-									: (cb: () => void) => setTimeout(cb, 0);
-							raf(() => {
-								try {
-									URL.revokeObjectURL(previousUrl);
-								} catch {
-									/* ignore */
-								}
-							});
+			// Remote images are loaded with crossOrigin='anonymous' so the Konva
+			// canvas stays untainted and the print/export flow can call
+			// stage.toDataURL(). Supabase Storage sends Access-Control-Allow-Origin
+			// on object responses; if a host doesn't, we retry once without CORS so
+			// the panel still displays — printing then falls back to the raw
+			// background image for that panel. blob:/data: URLs are same-origin
+			// and skip CORS entirely.
+			const attempt = (useCors: boolean) => {
+				const img = new window.Image();
+				if (useCors) img.crossOrigin = 'anonymous';
+				img.onload = () => {
+					// onload fires once bytes are in, but the image may still fail to
+					// decode (corrupt payload, unsupported pixel format, exceeds the
+					// platform's max bitmap size). decode() surfaces those explicitly
+					// instead of letting Konva paint a broken image silently.
+					img.decode().then(
+						() => {
+							panel.bgImage = img;
+							panel.bgImageUrl = url;
+							// Force reactive refresh
+							this.panels = [...this.panels];
+							resolve();
+							// Defer revoking the previous blob URL until after the current
+							// render cycle commits — revoking synchronously here races with
+							// Konva/Svelte still reading from the old src during the swap,
+							// which can blank the panel for a frame. http(s) URLs untouched.
+							if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) {
+								const raf =
+									typeof requestAnimationFrame === 'function'
+										? requestAnimationFrame
+										: (cb: () => void) => setTimeout(cb, 0);
+								raf(() => {
+									try {
+										URL.revokeObjectURL(previousUrl);
+									} catch {
+										/* ignore */
+									}
+								});
+							}
+						},
+						(err) => {
+							console.error('setPanelBgImage: image failed to decode', { index, url, err });
+							reject(new Error('Image failed to decode'));
 						}
-					},
-					(err) => {
-						console.error('setPanelBgImage: image failed to decode', { index, url, err });
-						reject(new Error('Image failed to decode'));
+					);
+				};
+				img.onerror = () => {
+					if (useCors) {
+						console.warn('setPanelBgImage: CORS load failed, retrying without crossOrigin', {
+							index,
+							url
+						});
+						attempt(false);
+						return;
 					}
-				);
+					console.error('setPanelBgImage: image failed to load', { index, url });
+					reject(new Error('Image failed to load'));
+				};
+				img.src = url;
 			};
-			img.onerror = () => {
-				console.error('setPanelBgImage: image failed to load', { index, url });
-				reject(new Error('Image failed to load'));
-			};
-			img.src = url;
+			attempt(/^https?:/i.test(url));
 		});
 	}
 
@@ -513,12 +509,18 @@ class ComicState {
 
 	// Global deck tools
 	setTemplate(id: TemplateId) {
-		const count = getPanelCount(id);
+		const count = getTemplate(id).panelCount;
 		const old = this.panels;
 		this.templateId = id;
 		this.panels = Array.from({ length: count }, (_, i) =>
 			i < old.length
-				? { bgImage: old[i].bgImage, bgImageUrl: old[i].bgImageUrl, bubbles: [...old[i].bubbles], stageW: old[i].stageW, stageH: old[i].stageH }
+				? {
+						bgImage: old[i].bgImage,
+						bgImageUrl: old[i].bgImageUrl,
+						bubbles: [...old[i].bubbles],
+						stageW: old[i].stageW,
+						stageH: old[i].stageH
+					}
 				: { bgImage: undefined, bgImageUrl: '', bubbles: [], stageW: 0, stageH: 0 }
 		);
 		this.activePanelIndex = 0;
@@ -526,23 +528,26 @@ class ComicState {
 	}
 
 	clearAll() {
-		this.panels = createPanels(getPanelCount(this.templateId));
+		this.panels = createPanels(getTemplate(this.templateId).panelCount);
 		this.activePanelIndex = 0;
 		this.activeBubbleId = undefined;
 	}
 
 	reset() {
-		this.templateId = 'grid-3x3';
-		this.panels = createPanels(getPanelCount('grid-3x3'));
+		this.templateId = DEFAULT_TEMPLATE_ID;
+		this.panels = createPanels(getTemplate(DEFAULT_TEMPLATE_ID).panelCount);
 		this.activePanelIndex = 0;
 		this.activeBubbleId = undefined;
 		this.comicId = null;
 		this.title = 'Untitled';
+		this.sheetNumber = 1;
 	}
 
-	hydrate(payload: {
-		id: string;
-		name: string | null;
+	// Swap the editor to a different page of the current comic. Replaces the
+	// template + panels wholesale; the caller is responsible for saving the
+	// outgoing page first (see the editor's switchPage).
+	loadSheet(sheet: {
+		number: number;
 		templateSlug?: string | null;
 		panels: Array<{
 			index: number;
@@ -550,19 +555,11 @@ class ComicState {
 			bubbles: Bubble[];
 		}>;
 	}) {
-		const slugIsKnown =
-			payload.templateSlug === 'grid-3x3' || payload.templateSlug === 'page-1-2-3';
-		const templateId: TemplateId = slugIsKnown
-			? (payload.templateSlug as TemplateId)
-			: payload.panels.length === 6
-				? 'page-1-2-3'
-				: 'grid-3x3';
-		const count = getPanelCount(templateId);
+		const templateId = resolveTemplateId(sheet.templateSlug, sheet.panels.length);
 		this.templateId = templateId;
-		this.panels = createPanels(count);
-		this.comicId = payload.id;
-		this.title = payload.name || 'Untitled';
-		for (const pData of payload.panels) {
+		this.panels = createPanels(getTemplate(templateId).panelCount);
+		this.sheetNumber = sheet.number;
+		for (const pData of sheet.panels) {
 			const idx = (pData.index ?? 1) - 1;
 			if (idx < 0 || idx >= this.panels.length) continue;
 			// Fill in z_index defaults for legacy rows that pre-date the field
@@ -573,12 +570,31 @@ class ComicState {
 			}));
 			if (pData.imageUrl) {
 				this.setPanelBgImage(idx, pData.imageUrl).catch((err) => {
-					console.warn('hydrate: panel image failed to load', { idx, err });
+					console.warn('loadSheet: panel image failed to load', { idx, err });
 				});
 			}
 		}
 		this.activePanelIndex = 0;
 		this.activeBubbleId = undefined;
+	}
+
+	hydrate(payload: {
+		id: string;
+		name: string | null;
+		sheets: Array<{
+			number: number;
+			templateSlug?: string | null;
+			panels: Array<{
+				index: number;
+				imageUrl: string | null;
+				bubbles: Bubble[];
+			}>;
+		}>;
+	}) {
+		this.comicId = payload.id;
+		this.title = payload.name || 'Untitled';
+		const first = payload.sheets[0] ?? { number: 1, templateSlug: null, panels: [] };
+		this.loadSheet(first);
 	}
 
 	exportJSON(): string {
