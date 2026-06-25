@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { resolveSheetNumber } from '$lib/sheets';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -48,12 +49,12 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 	const payload: any = await request.json().catch(() => null);
 
 	// Page being saved (sheets.number). Defaults to 1 for older clients that
-	// never send it. Clamped to a sane range so a bad payload can't create
-	// absurd sheet numbers.
-	const sheetNumber =
-		payload && Number.isInteger(payload.sheetNumber) && payload.sheetNumber >= 1
-			? Math.min(payload.sheetNumber, 100)
-			: 1;
+	// never send it. An out-of-range value (non-integer/NaN, < 1, or > MAX_SHEETS)
+	// is rejected rather than clamped — clamping would silently overwrite a
+	// different existing page.
+	const sheetNumber = resolveSheetNumber(payload?.sheetNumber);
+	if (sheetNumber === null)
+		return new Response(JSON.stringify({ error: 'Invalid sheetNumber' }), { status: 400 });
 
 	// Update comic metadata if provided
 	if (payload && typeof payload.name === 'string') {

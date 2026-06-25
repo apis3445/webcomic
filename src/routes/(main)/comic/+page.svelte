@@ -17,6 +17,7 @@
 		type PanelState
 	} from '$lib/comicState.svelte';
 	import { TEMPLATES, getTemplate } from '$lib/templates';
+	import { MAX_SHEETS } from '$lib/sheets';
 	import { onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 
@@ -33,6 +34,8 @@
 	let thumbnailPreviewUrl = $state<string | null>(null);
 	let creatingComic = $state(false);
 	let createError = $state<string | null>(null);
+	// Surfaced when the user tries to add a page past the MAX_SHEETS cap.
+	let addPageError = $state<string | null>(null);
 	let savingCover = $state(false);
 	let coverError = $state<string | null>(null);
 	let isPrintMode = $state(false);
@@ -52,6 +55,9 @@
 	// every switch. Plain Map — only the page-bar list below is rendered.
 	let sheetCache = new SvelteMap<number, SheetData>();
 	let pageNumbers = $state<number[]>([1]);
+	// True once the highest page number reaches the cap, so the next page would
+	// exceed MAX_SHEETS. Used to disable the "Add page" control.
+	let atPageCap = $derived(Math.max(...pageNumbers, comicState.sheetNumber) >= MAX_SHEETS);
 	// When set, the wizard's layout step is picking a template for this new
 	// page instead of changing the current page's layout.
 	let pendingNewPage = $state<number | null>(null);
@@ -510,7 +516,15 @@
 	}
 
 	function addPage() {
-		pendingNewPage = Math.max(...pageNumbers, comicState.sheetNumber) + 1;
+		const next = Math.max(...pageNumbers, comicState.sheetNumber) + 1;
+		// Enforce the shared cap so we never create a page the API would reject
+		// (or, previously, silently clamp onto an existing page).
+		if (next > MAX_SHEETS) {
+			addPageError = `A comic can have at most ${MAX_SHEETS} pages.`;
+			return;
+		}
+		addPageError = null;
+		pendingNewPage = next;
 		step = 'layout';
 	}
 
@@ -954,10 +968,18 @@
 									Page {n}
 								</button>
 							{/each}
-							<button class="page-tab page-tab-add" onclick={addPage} title="Add a new page">
+							<button
+								class="page-tab page-tab-add"
+								onclick={addPage}
+								disabled={atPageCap}
+								title={atPageCap ? `Maximum of ${MAX_SHEETS} pages reached` : 'Add a new page'}
+							>
 								+ Add page
 							</button>
 						</nav>
+						{#if addPageError}
+							<p class="page-bar-error" role="alert">{addPageError}</p>
+						{/if}
 					{/if}
 					<div class="comic-grid {getTemplate(comicState.templateId).layoutClass}">
 						{#each comicState.panels as _panel, i (i)}
@@ -1708,6 +1730,23 @@
 
 	.page-tab-add {
 		border-style: dashed;
+	}
+
+	.page-tab:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	.page-tab:disabled:hover {
+		border-color: #cbd5e1;
+		color: #475569;
+	}
+
+	.page-bar-error {
+		margin: 6px 0 0;
+		color: #991b1b;
+		font-size: 0.85rem;
+		font-weight: 700;
 	}
 
 	/* ── Comic Grids ── */

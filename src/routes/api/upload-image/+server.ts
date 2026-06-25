@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { resolveSheetNumber } from '$lib/sheets';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -10,7 +11,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	let comicId = form.get('comicId') as string | null;
 
 	const panelIndex = panelIndexStr ? parseInt(panelIndexStr, 10) : 1;
-	const sheetNumber = sheetNumberStr ? parseInt(sheetNumberStr, 10) : 1;
+	// Validate against the shared page cap. Missing → page 1; out of range
+	// (non-integer/NaN, < 1, or > MAX_SHEETS) → 400, matching save/publish.
+	const sheetNumber = resolveSheetNumber(sheetNumberStr);
+	if (sheetNumber === null)
+		return new Response(JSON.stringify({ error: 'Invalid sheetNumber' }), { status: 400 });
 
 	if (!file) return new Response(JSON.stringify({ error: 'file is required' }), { status: 400 });
 
