@@ -15,7 +15,18 @@ WITH ranked AS (
 )
 DELETE FROM images WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 
-ALTER TABLE images
-  ADD CONSTRAINT images_panel_id_key UNIQUE (panel_id);
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS, so guard against environments
+-- where this constraint was already created (e.g. partially-applied reruns).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'images_panel_id_key'
+      AND conrelid = 'images'::regclass
+  ) THEN
+    ALTER TABLE images
+      ADD CONSTRAINT images_panel_id_key UNIQUE (panel_id);
+  END IF;
+END $$;
 
 COMMIT;

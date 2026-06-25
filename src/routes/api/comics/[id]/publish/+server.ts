@@ -83,51 +83,21 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				}
 			}
 
-			// Ensure the target sheet (page) exists. Throw on any error so the
-			// surrounding catch logs the failure and skips the pre-persist block
-			// entirely (publish can still proceed against existing DB rows).
-			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
+			const sheetUpsert: { comic_id: string; number: number; template_id?: string } = {
+				comic_id: comicId,
+				number: sheetNumber
+			};
+			if (safeTemplateIdPub) sheetUpsert.template_id = safeTemplateIdPub;
+			const { data: sheetRow, error: sheetUpsertErr } = await locals.supabase
 				.from('sheets')
+				.upsert(sheetUpsert, { onConflict: 'comic_id,number' })
 				.select('id')
-				.eq('comic_id', comicId)
-				.eq('number', sheetNumber)
-				.maybeSingle();
-			if (sheetSelectErr) {
-				throw new Error(`sheet select failed: ${sheetSelectErr.message}`);
-			}
-			let sheetRow: { id: string } | null = sheetSelect as { id: string } | null;
-			if (!sheetRow) {
-				const { data: newSheet, error: newSheetErr } = await locals.supabase
-					.from('sheets')
-					.insert({
-						comic_id: comicId,
-						number: sheetNumber,
-						template_id: safeTemplateIdPub
-					})
-					.select('id')
-					.single();
-				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
-					throw new Error(`sheet insert failed: ${newSheetErr?.message ?? 'missing id'}`);
-				}
-				sheetRow = newSheet as { id: string };
-			} else if (payload.templateId && safeTemplateIdPub) {
-				// Only update when slug resolved; otherwise we'd wipe the existing template.
-				if (typeof sheetRow.id !== 'string') {
-					throw new Error('invalid sheet record (missing id)');
-				}
-				const { error: tmplUpdErr } = await locals.supabase
-					.from('sheets')
-					.update({ template_id: safeTemplateIdPub })
-					.eq('id', sheetRow.id);
-				if (tmplUpdErr) {
-					throw new Error(`sheet template update failed: ${tmplUpdErr.message}`);
-				}
+				.single();
+			if (sheetUpsertErr || !sheetRow || typeof (sheetRow as any).id !== 'string') {
+				throw new Error(`sheet upsert failed: ${sheetUpsertErr?.message ?? 'missing id'}`);
 			}
 
-			const sheetId = sheetRow.id;
-			if (typeof sheetId !== 'string') {
-				throw new Error('resolved sheetId is not a string');
-			}
+			const sheetId = (sheetRow as { id: string }).id;
 
 			// Upsert panels and bubbles (simple approach: find panel by sheet_id + index)
 			if (Array.isArray(payload.panels)) {

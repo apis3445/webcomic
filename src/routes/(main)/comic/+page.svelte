@@ -178,6 +178,11 @@
 	let suppressNextAutosave = false;
 	// In-flight guard: prevents two saveNow() calls from racing into the same comic.
 	let saveInFlight = false;
+	// The currently running save, exposed so saveNow() can hand callers a promise
+	// that resolves only when the underlying request finishes. Explicit user
+	// actions (page switch / new page) await this to guarantee persistence before
+	// they swap pages.
+	let savePromise: Promise<void> | null = null;
 	const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 	function buildSnapshot(): string {
@@ -203,15 +208,24 @@
 		});
 	}
 
-	async function saveNow() {
+	// Always returns a promise that resolves once persistence has actually settled,
+	// so callers can reliably `await saveNow()` before swapping pages. If a save is
+	// already in flight we don't start a parallel POST; we wait for it to finish and
+	// then run one more save, guaranteeing the latest edits (made while the first
+	// request was in flight) also reach the server before the promise resolves.
+	// doSave never throws — it records failures in saveStatus/saveError — so the
+	// returned promise resolves rather than rejects; callers check saveStatus.
+	function saveNow(): Promise<void> {
 		const cid = comicState.comicId;
-		if (!cid) return;
-		// Re-entry guard: if a save is already in flight, defer this one
-		// by re-scheduling the autosave timer instead of starting a parallel POST.
+		if (!cid) return Promise.resolve();
 		if (saveInFlight) {
-			scheduleAutosave();
-			return;
+			return (savePromise ?? Promise.resolve()).then(() => saveNow());
 		}
+		savePromise = doSave(cid);
+		return savePromise;
+	}
+
+	async function doSave(cid: string): Promise<void> {
 		if (saveTimer) {
 			clearTimeout(saveTimer);
 			saveTimer = null;
@@ -251,6 +265,7 @@
 			saveStatus = 'error';
 		} finally {
 			saveInFlight = false;
+			savePromise = null;
 		}
 	}
 
