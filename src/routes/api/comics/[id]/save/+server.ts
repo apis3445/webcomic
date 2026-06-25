@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { resolveSheetNumber } from '$lib/sheets';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -47,6 +48,14 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 
 	const payload: any = await request.json().catch(() => null);
 
+	// Page being saved (sheets.number). Defaults to 1 for older clients that
+	// never send it. An out-of-range value (non-integer/NaN, < 1, or > MAX_SHEETS)
+	// is rejected rather than clamped — clamping would silently overwrite a
+	// different existing page.
+	const sheetNumber = resolveSheetNumber(payload?.sheetNumber);
+	if (sheetNumber === null)
+		return new Response(JSON.stringify({ error: 'Invalid sheetNumber' }), { status: 400 });
+
 	// Update comic metadata if provided
 	if (payload && typeof payload.name === 'string') {
 		const { error: updErr } = await locals.supabase
@@ -80,52 +89,31 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 		}
 
 		if (payload && (payload.templateId || Array.isArray(payload.panels))) {
-			// Ensure sheet #1 exists
-			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
+			// Atomically ensure the target sheet (page) exists. A single upsert keyed
+			// on the (comic_id, number) unique constraint replaces a SELECT followed by
+			// a conditional INSERT, which races under concurrent requests.
+			// template_id is only included when a slug/UUID actually resolved: PostgREST
+			// upserts write only the columns present in the payload, so an upsert that
+			// hits an existing row never wipes a previously-saved template (and a brand
+			// new row still defaults template_id to null on insert).
+			const sheetUpsert: { comic_id: string; number: number; template_id?: string } = {
+				comic_id: comicId,
+				number: sheetNumber
+			};
+			if (safeTemplateId) sheetUpsert.template_id = safeTemplateId;
+			const { data: sheetRow, error: sheetUpsertErr } = await locals.supabase
 				.from('sheets')
+				.upsert(sheetUpsert, { onConflict: 'comic_id,number' })
 				.select('id')
-				.eq('comic_id', comicId)
-				.eq('number', 1)
-				.maybeSingle();
-			if (sheetSelectErr) {
-				console.error('[save]', reqId, 'sheet select failed', sheetSelectErr);
-				return new Response(JSON.stringify({ error: 'Failed to load sheet' }), { status: 500 });
-			}
-			let sheetRow: { id: string } | null = sheetSelect as { id: string } | null;
-			if (!sheetRow) {
-				const { data: newSheet, error: newSheetErr } = await locals.supabase
-					.from('sheets')
-					.insert({ comic_id: comicId, number: 1, template_id: safeTemplateId })
-					.select('id')
-					.single();
-				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
-					console.error('[save]', reqId, 'failed to create sheet', newSheetErr);
-					return new Response(JSON.stringify({ error: 'Failed to ensure sheet exists' }), {
-						status: 500
-					});
-				}
-				sheetRow = newSheet as { id: string };
-			} else if (payload.templateId && safeTemplateId) {
-				// Only update template_id when slug resolved to a valid UUID.
-				// Otherwise we'd wipe an existing valid template — losing the user's selection on reload.
-				if (typeof sheetRow.id !== 'string') {
-					return new Response(JSON.stringify({ error: 'Invalid sheet record' }), { status: 500 });
-				}
-				const { error: tmplUpdErr } = await locals.supabase
-					.from('sheets')
-					.update({ template_id: safeTemplateId })
-					.eq('id', sheetRow.id);
-				if (tmplUpdErr) {
-					return saveErrorResponse(reqId, 'sheet_template_update', tmplUpdErr);
-				}
-			}
-
-			const sheetId = sheetRow.id;
-			if (typeof sheetId !== 'string') {
-				return new Response(JSON.stringify({ error: 'Resolved sheet id is not a string' }), {
+				.single();
+			if (sheetUpsertErr || !sheetRow || typeof (sheetRow as any).id !== 'string') {
+				console.error('[save]', reqId, 'failed to ensure sheet exists', sheetUpsertErr);
+				return new Response(JSON.stringify({ error: 'Failed to ensure sheet exists' }), {
 					status: 500
 				});
 			}
+
+			const sheetId = (sheetRow as { id: string }).id;
 
 			// Upsert panels and bubbles (find panel by sheet_id + index)
 			if (Array.isArray(payload.panels)) {
@@ -217,9 +205,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
-						const { error: bubbleInsErr } = await locals.supabase
-							.from('bubbles')
-							.insert(toInsert);
+						const { error: bubbleInsErr } = await locals.supabase.from('bubbles').insert(toInsert);
 						if (bubbleInsErr) {
 							return saveErrorResponse(reqId, 'bubble_insert', bubbleInsErr);
 						}

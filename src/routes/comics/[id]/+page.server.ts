@@ -8,7 +8,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// Fetch comic and ensure it's public
 	const { data: comic, error: comicErr } = await locals.supabase
 		.from('comics')
-		.select('id, owner_id, name, description, is_public')
+		.select('id, owner_id, name, description, is_public, thumbnail_path')
 		.eq('id', id)
 		.maybeSingle();
 
@@ -32,18 +32,28 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		return { status: 500 };
 	}
 
-	// Resolve the template slug explicitly so the page can render the right layout.
-	// Embedded join via sheet_templates(slug) silently returns null without a FK.
-	let templateSlug: string | null = null;
-	const firstTemplateId = (sheets || []).find((s: any) => s.template_id)?.template_id;
-	if (firstTemplateId) {
-		const { data: tmpl } = await locals.supabase
+	// Resolve template slugs explicitly (one query for every sheet's template)
+	// so each page can render its own layout. Embedded join via
+	// sheet_templates(slug) silently returns null without a FK.
+	const templateIds = [
+		...new Set((sheets || []).map((s: any) => s.template_id).filter(Boolean))
+	] as string[];
+	const slugByTemplateId = new Map<string, string | null>();
+	if (templateIds.length) {
+		const { data: tmpls } = await locals.supabase
 			.from('sheet_templates')
-			.select('slug')
-			.eq('id', firstTemplateId)
-			.maybeSingle();
-		templateSlug = (tmpl as { slug: string | null } | null)?.slug ?? null;
+			.select('id, slug')
+			.in('id', templateIds);
+		for (const t of (tmpls ?? []) as Array<{ id: string; slug: string | null }>) {
+			slugByTemplateId.set(t.id, t.slug);
+		}
 	}
+
+	// Sheets with their slug attached, in page order.
+	const sheetsWithSlug = (sheets || []).map((s: any) => ({
+		...s,
+		templateSlug: s.template_id ? (slugByTemplateId.get(s.template_id) ?? null) : null
+	}));
 
 	const sheetIds = (sheets || []).map((s: any) => s.id);
 
@@ -115,10 +125,24 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		orderedPanels.push({ panel: p, bubbles: entry?.bubbles || [], image: entry?.image || null });
 	}
 
+	// Cover for the magazine view: prefer the uploaded cover (signed URL from
+	// the private bucket — same pattern as the browse gallery), falling back
+	// to the first published panel image.
+	let coverUrl: string | null = null;
+	if ((comic as any).thumbnail_path) {
+		const { data: thumb } = await locals.supabase.storage
+			.from('comics')
+			.createSignedUrl((comic as any).thumbnail_path, 60 * 60 * 24);
+		coverUrl = thumb?.signedUrl ?? null;
+	}
+	if (!coverUrl) {
+		coverUrl = (imgs || []).find((im: any) => im.public_url)?.public_url ?? null;
+	}
+
 	return {
 		comic,
-		sheets: sheets || [],
-		templateSlug,
-		panels: orderedPanels
+		sheets: sheetsWithSlug,
+		panels: orderedPanels,
+		coverUrl
 	};
 };

@@ -2,35 +2,115 @@
 	import '../../../app.css';
 	import Panel from '$lib/components/Panel.svelte';
 	import BubbleButton from '$lib/components/BubbleButton.svelte';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { browser } from '$app/environment';
+	import { untrack, tick, flushSync } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
+	import { getPanelStage } from '$lib/panelStages';
 	import {
 		comicState,
+		type Bubble,
 		type BubbleType,
 		type TemplateId,
 		type PanelState
 	} from '$lib/comicState.svelte';
+	import { TEMPLATES, getTemplate } from '$lib/templates';
+	import { MAX_SHEETS } from '$lib/sheets';
 	import { onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 
 	const { data }: { data: PageData } = $props();
 
-	let step = $state<'select' | 'edit'>('select');
+	// Wizard steps: 1. cover (title + cover image) → 2. layout (pick a page
+	// template) → 3. edit (panel editor). Designed so future steps (more
+	// pages, back cover) slot in between 'layout' and 'edit'.
+	type WizardStep = 'cover' | 'layout' | 'edit';
+	let step = $state<WizardStep>('cover');
 	let bubbleText = $state('');
 	let newComicName = $state('');
 	let thumbnailFile = $state<File | null>(null);
 	let thumbnailPreviewUrl = $state<string | null>(null);
 	let creatingComic = $state(false);
 	let createError = $state<string | null>(null);
+	// Surfaced when the user tries to add a page past the MAX_SHEETS cap.
+	let addPageError = $state<string | null>(null);
+	let savingCover = $state(false);
+	let coverError = $state<string | null>(null);
 	let isPrintMode = $state(false);
+
+	// Cover already stored server-side for this comic (signed URL), if any.
+	// Refreshed via invalidateAll() after a new cover upload.
+	const existingCoverUrl = $derived(data.comic?.thumbnailUrl ?? null);
+
+	// ── Pages (sheets) ──────────────────────────────────────────────────────
+	type SheetData = {
+		number: number;
+		templateSlug: string | null;
+		panels: Array<{ index: number; imageUrl: string | null; bubbles: Bubble[] }>;
+	};
+	// comicState only holds the page being edited; the other pages live here
+	// so switching doesn't refetch. Kept in sync by stashCurrentSheet() before
+	// every switch. Plain Map — only the page-bar list below is rendered.
+	let sheetCache = new SvelteMap<number, SheetData>();
+	let pageNumbers = $state<number[]>([1]);
+	// True once the highest page number reaches the cap, so the next page would
+	// exceed MAX_SHEETS. Used to disable the "Add page" control.
+	let atPageCap = $derived(Math.max(...pageNumbers, comicState.sheetNumber) >= MAX_SHEETS);
+	// When set, the wizard's layout step is picking a template for this new
+	// page instead of changing the current page's layout.
+	let pendingNewPage = $state<number | null>(null);
+	// Re-entry guard for createNewPage: it awaits two saves, and a second
+	// template-card click inside that window would add the same page twice
+	// (duplicate keys in the page bar).
+	let addingPage = $state(false);
+
+	// One flattened image per panel (Konva stage.toDataURL) used by the print
+	// view, so speech bubbles and text print along with the background. null
+	// entries fall back to the panel's raw background image.
+	let printSnapshots = $state<(string | null)[]>([]);
+
+	function buildPrintSnapshots() {
+		// Clear bubble selection so the blue highlight and delete badge
+		// don't end up in the printed output, and flush so Konva has the
+		// deselected scene before we rasterize it.
+		comicState.activeBubbleId = undefined;
+		flushSync();
+		printSnapshots = comicState.panels.map((_, i) => {
+			const stage = getPanelStage(i);
+			if (!stage) return null;
+			try {
+				return stage.toDataURL({ pixelRatio: 2 });
+			} catch (err) {
+				// Tainted canvas (background image without CORS headers) — the
+				// print view falls back to the raw background for this panel.
+				console.warn('print: panel snapshot failed, using background image', { i, err });
+				return null;
+			}
+		});
+	}
+
+	async function printComic() {
+		buildPrintSnapshots();
+		isPrintMode = true;
+		await tick();
+		window.print();
+	}
 
 	$effect(() => {
 		if (!browser) return;
 
 		const mql = window.matchMedia('print');
 		const onChange = (e: MediaQueryListEvent) => (isPrintMode = e.matches);
-		const onBefore = () => (isPrintMode = true);
+		// Also covers Cmd/Ctrl+P: beforeprint fires synchronously before the
+		// browser captures the page, so flushSync makes the freshly snapshotted
+		// print view real DOM in time.
+		const onBefore = () => {
+			if (step === 'edit') buildPrintSnapshots();
+			isPrintMode = true;
+			flushSync();
+		};
 		const onAfter = () => (isPrintMode = false);
 
 		isPrintMode = mql.matches;
@@ -45,20 +125,47 @@
 		};
 	});
 
-	// URL is the source of truth: ?id=X loads the comic into editor; no id => new-comic picker.
+	// URL is the source of truth: ?id=X loads the comic into the editor
+	// (?step=cover|layout opens that wizard step instead, e.g. "Change cover"
+	// from My Comics); no id => new-comic wizard starting at the cover step.
 	$effect(() => {
+		const stepParam = page.url.searchParams.get('step');
 		if (data.comic) {
 			if (comicState.comicId !== data.comic.id) {
 				suppressNextAutosave = true;
 				comicState.hydrate(data.comic);
+				sheetCache = new SvelteMap(data.comic.sheets.map((s) => [s.number, s]));
+				pageNumbers = data.comic.sheets.map((s) => s.number);
+				pendingNewPage = null;
+			} else if (untrack(() => sheetCache.size) === 0) {
+				// Fresh component mount for a comic that's still loaded in the
+				// singleton comicState (e.g. navigating away and back): rebuild
+				// the page cache/bar from server data, keeping comicState as is.
+				// Union with the current page in case it was added but never
+				// reached the server.
+				sheetCache = new SvelteMap(data.comic.sheets.map((s) => [s.number, s]));
+				pageNumbers = [
+					...new Set([...data.comic.sheets.map((s) => s.number), comicState.sheetNumber])
+				].sort((a, b) => a - b);
 			}
-			step = 'edit';
+			if (stepParam === 'cover' || stepParam === 'layout') {
+				// untrack: typing the new title into the cover form must not
+				// re-trigger this effect and clobber the input.
+				if (stepParam === 'cover') newComicName = untrack(() => comicState.title);
+				step = stepParam;
+			} else {
+				step = 'edit';
+			}
 		} else {
 			suppressNextAutosave = true;
 			comicState.reset();
+			newComicName = '';
 			lastSavedSnapshot = '';
 			saveStatus = 'idle';
-			step = 'select';
+			sheetCache = new SvelteMap();
+			pageNumbers = [1];
+			pendingNewPage = null;
+			step = 'cover';
 		}
 	});
 
@@ -77,11 +184,17 @@
 	let suppressNextAutosave = false;
 	// In-flight guard: prevents two saveNow() calls from racing into the same comic.
 	let saveInFlight = false;
+	// The currently running save, exposed so saveNow() can hand callers a promise
+	// that resolves only when the underlying request finishes. Explicit user
+	// actions (page switch / new page) await this to guarantee persistence before
+	// they swap pages.
+	let savePromise: Promise<void> | null = null;
 	const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 	function buildSnapshot(): string {
 		return JSON.stringify({
 			title: comicState.title,
+			sheetNumber: comicState.sheetNumber,
 			templateId: comicState.templateId,
 			panels: comicState.panels.map((p: PanelState) => ({
 				stageW: p.stageW,
@@ -101,15 +214,24 @@
 		});
 	}
 
-	async function saveNow() {
+	// Always returns a promise that resolves once persistence has actually settled,
+	// so callers can reliably `await saveNow()` before swapping pages. If a save is
+	// already in flight we don't start a parallel POST; we wait for it to finish and
+	// then run one more save, guaranteeing the latest edits (made while the first
+	// request was in flight) also reach the server before the promise resolves.
+	// doSave never throws — it records failures in saveStatus/saveError — so the
+	// returned promise resolves rather than rejects; callers check saveStatus.
+	function saveNow(): Promise<void> {
 		const cid = comicState.comicId;
-		if (!cid) return;
-		// Re-entry guard: if a save is already in flight, defer this one
-		// by re-scheduling the autosave timer instead of starting a parallel POST.
+		if (!cid) return Promise.resolve();
 		if (saveInFlight) {
-			scheduleAutosave();
-			return;
+			return (savePromise ?? Promise.resolve()).then(() => saveNow());
 		}
+		savePromise = doSave(cid);
+		return savePromise;
+	}
+
+	async function doSave(cid: string): Promise<void> {
 		if (saveTimer) {
 			clearTimeout(saveTimer);
 			saveTimer = null;
@@ -121,6 +243,7 @@
 		try {
 			const payload = {
 				name: comicState.title,
+				sheetNumber: comicState.sheetNumber,
 				templateId: comicState.templateId,
 				panels: comicState.panels.map((p: PanelState, idx: number) => ({
 					index: idx + 1,
@@ -148,6 +271,7 @@
 			saveStatus = 'error';
 		} finally {
 			saveInFlight = false;
+			savePromise = null;
 		}
 	}
 
@@ -190,6 +314,7 @@
 		try {
 			const payload = {
 				name: comicState.title,
+				sheetNumber: comicState.sheetNumber,
 				templateId: comicState.templateId,
 				panels: comicState.panels.map((p: PanelState, idx: number) => ({
 					index: idx + 1,
@@ -280,6 +405,7 @@
 		try {
 			// Send current client-side template and bubbles so server can persist them before publishing
 			const payload = {
+				sheetNumber: comicState.sheetNumber,
 				templateId: comicState.templateId,
 				panels: comicState.panels.map((p: PanelState, idx: number) => ({
 					index: idx + 1,
@@ -288,7 +414,7 @@
 					bubbles: p.bubbles
 				}))
 			};
-			publishStep = "Publishing";
+			publishStep = 'Publishing';
 			const res = await fetch(`/api/comics/${comicId}/publish`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -318,7 +444,13 @@
 	}
 
 	async function selectTemplate(id: TemplateId) {
-		const newCount = id === 'grid-3x3' ? 9 : 6;
+		// "+ Add page" flow: the chosen template belongs to the new page, not
+		// the one currently loaded.
+		if (pendingNewPage !== null) {
+			await createNewPage(id);
+			return;
+		}
+		const newCount = getTemplate(id).panelCount;
 		const panelsToRemove = comicState.panels.slice(newCount);
 		const wouldLoseContent =
 			comicState.hasContent &&
@@ -337,6 +469,154 @@
 
 		// Create a comic first if necessary, then enter edit mode
 		await createAndStart(id);
+	}
+
+	function goToStep(target: WizardStep) {
+		if (target === step) return;
+		// Edit step only exists once the comic has been created.
+		if (target === 'edit' && !comicState.comicId) return;
+		// Navigating the wizard cancels a pending "+ Add page" flow.
+		pendingNewPage = null;
+		if (target === 'cover') {
+			// Re-sync the form with the saved title when (re)opening the cover step.
+			if (comicState.comicId) newComicName = comicState.title;
+			coverError = null;
+		}
+		step = target;
+	}
+
+	// ── Page (sheet) switching ──────────────────────────────────────────────
+
+	// Mirror the page currently loaded in comicState back into the cache so
+	// its edits survive switching to another page.
+	function stashCurrentSheet() {
+		sheetCache.set(comicState.sheetNumber, {
+			number: comicState.sheetNumber,
+			templateSlug: comicState.templateId,
+			panels: comicState.panels.map((p: PanelState, idx: number) => ({
+				index: idx + 1,
+				imageUrl: p.bgImageUrl || null,
+				bubbles: p.bubbles.map((b) => ({ ...b }))
+			}))
+		});
+	}
+
+	async function switchPage(n: number) {
+		if (n === comicState.sheetNumber) return;
+		const target = sheetCache.get(n);
+		if (!target) return;
+		// Save the page being left before swapping it out — its edits only
+		// live in comicState. Block the switch if the save fails so nothing
+		// is stranded.
+		stashCurrentSheet();
+		await saveNow();
+		if (saveStatus === 'error') return;
+		suppressNextAutosave = true;
+		comicState.loadSheet(target);
+	}
+
+	function addPage() {
+		const next = Math.max(...pageNumbers, comicState.sheetNumber) + 1;
+		// Enforce the shared cap so we never create a page the API would reject
+		// (or, previously, silently clamp onto an existing page).
+		if (next > MAX_SHEETS) {
+			addPageError = `A comic can have at most ${MAX_SHEETS} pages.`;
+			return;
+		}
+		addPageError = null;
+		pendingNewPage = next;
+		step = 'layout';
+	}
+
+	async function createNewPage(templateId: TemplateId) {
+		const number = pendingNewPage;
+		if (number === null || addingPage) return;
+		addingPage = true;
+		try {
+			stashCurrentSheet();
+			await saveNow();
+			if (saveStatus === 'error') {
+				createError = saveError ?? 'Could not save the current page. Please try again.';
+				return;
+			}
+			const sheet: SheetData = { number, templateSlug: templateId, panels: [] };
+			sheetCache.set(number, sheet);
+			// Set-dedupe: belt and braces against the same number sneaking in
+			// twice (duplicate keys crash the page bar's keyed each).
+			pageNumbers = [...new Set([...pageNumbers, number])].sort((a, b) => a - b);
+			suppressNextAutosave = true;
+			comicState.loadSheet(sheet);
+			pendingNewPage = null;
+			step = 'edit';
+			// Persist the new (empty) sheet right away so it exists server-side
+			// with its template even if the user navigates off without editing.
+			await saveNow();
+		} finally {
+			addingPage = false;
+		}
+	}
+
+	function cancelAddPage() {
+		pendingNewPage = null;
+		step = 'edit';
+	}
+
+	// Persist title + cover changes for an existing comic, then move on.
+	// For a brand-new comic nothing exists server-side yet, so the cover step
+	// just collects local state and createAndStart() persists it on creation.
+	async function saveCoverAndContinue(nextStep: 'edit' | 'layout') {
+		const cid = comicState.comicId;
+		if (!cid) {
+			step = 'layout';
+			return;
+		}
+		savingCover = true;
+		coverError = null;
+		try {
+			comicState.setTitle(newComicName.trim() || 'Untitled');
+			await saveNow();
+			if (saveStatus === 'error') {
+				coverError = saveError ?? 'Could not save changes. Please try again.';
+				return;
+			}
+			if (thumbnailFile) {
+				const fd = new FormData();
+				fd.append('file', thumbnailFile);
+				const res = await fetch(`/api/comics/${cid}/thumbnail`, { method: 'POST', body: fd });
+				const body = await res.json().catch(() => null);
+				if (!res.ok) {
+					coverError = body?.error ?? 'Could not save the cover image. Please try again.';
+					return;
+				}
+				thumbnailFile = null;
+				if (thumbnailPreviewUrl) {
+					URL.revokeObjectURL(thumbnailPreviewUrl);
+					thumbnailPreviewUrl = null;
+				}
+			}
+			// Refresh server data (new signed cover URL) and drop any ?step=
+			// param so a reload lands back in the editor, not the wizard.
+			if (page.url.searchParams.has('step')) {
+				await goto(resolve(`/comic?id=${cid}`), { replaceState: true, noScroll: true });
+			} else {
+				await invalidateAll();
+			}
+			step = nextStep;
+		} catch (e: unknown) {
+			console.error('saveCoverAndContinue failed', e);
+			coverError = 'Network error. Please check your connection and try again.';
+		} finally {
+			savingCover = false;
+		}
+	}
+
+	// Leave the cover step without persisting anything: discard the pending
+	// cover file selection and the (possibly edited) title field.
+	function cancelCoverEdit() {
+		removeThumbnail();
+		coverError = null;
+		if (comicState.comicId) newComicName = comicState.title;
+		step = 'edit';
 	}
 
 	function handleThumbnailChange(e: Event) {
@@ -407,7 +687,7 @@
 			creatingComic = false;
 		}
 	}
-	
+
 	// Reactively sync local textarea text when active bubble changes
 	$effect(() => {
 		const activeB = comicState.activeBubble;
@@ -434,37 +714,83 @@
 </script>
 
 <div class="app-container no-print">
-	<!-- Template Picker -->
-	{#if step === 'select'}
+	<!-- Wizard: cover + layout steps -->
+	{#if step === 'cover' || step === 'layout'}
 		<div class="template-picker">
 			<div class="picker-form">
-				<h2 class="picker-title">Create a new comic</h2>
-				<p class="picker-subtitle">Give it a name, add a cover, then pick a layout</p>
+				<nav class="wizard-steps" aria-label="Comic setup steps">
+					<button
+						type="button"
+						class="wizard-step"
+						class:active={step === 'cover'}
+						onclick={() => goToStep('cover')}
+					>
+						<span class="wizard-step-num">1</span> Cover
+					</button>
+					<span class="wizard-arrow" aria-hidden="true">→</span>
+					<button
+						type="button"
+						class="wizard-step"
+						class:active={step === 'layout'}
+						onclick={() => goToStep('layout')}
+					>
+						<span class="wizard-step-num">2</span> Page layout
+					</button>
+					<span class="wizard-arrow" aria-hidden="true">→</span>
+					<button
+						type="button"
+						class="wizard-step"
+						disabled={!comicState.comicId}
+						onclick={() => goToStep('edit')}
+					>
+						<span class="wizard-step-num">3</span> Edit page
+					</button>
+				</nav>
 
-				<div class="form-row">
-					<label for="new-comic-name" class="form-label">Comic Title</label>
-					<input
-						id="new-comic-name"
-						type="text"
-						class="form-input"
-						bind:value={newComicName}
-						placeholder="My awesome comic"
-					/>
-				</div>
+				{#if step === 'cover'}
+					<div>
+						<h2 class="picker-title">
+							{comicState.comicId ? 'Title & cover' : 'Create a new comic'}
+						</h2>
+						<p class="picker-subtitle">
+							{comicState.comicId
+								? 'Update the comic title and cover image'
+								: 'Give it a name and an optional cover, then pick a layout'}
+						</p>
+					</div>
 
-				<div class="form-row">
-					<span class="form-label">Cover Image <span class="form-label-hint">(optional)</span></span>
-					{#if thumbnailPreviewUrl}
-						<div class="thumb-preview-wrap">
-							<img src={thumbnailPreviewUrl} alt="Cover preview" class="thumb-preview" />
-							<button class="thumb-remove" onclick={removeThumbnail} title="Remove">×</button>
-						</div>
-					{:else}
-						<label class="thumb-dropzone" for="thumbnail-input">
-							<span class="thumb-icon">🖼</span>
-							<span class="thumb-label">Click to upload cover image</span>
-							<span class="thumb-hint">JPG · PNG · WebP · recommended 3:4</span>
-						</label>
+					<div class="form-row">
+						<label for="new-comic-name" class="form-label">Comic Title</label>
+						<input
+							id="new-comic-name"
+							type="text"
+							class="form-input"
+							bind:value={newComicName}
+							placeholder="My awesome comic"
+						/>
+					</div>
+
+					<div class="form-row">
+						<span class="form-label"
+							>Cover Image <span class="form-label-hint">(optional)</span></span
+						>
+						{#if thumbnailPreviewUrl}
+							<div class="thumb-preview-wrap">
+								<img src={thumbnailPreviewUrl} alt="New cover preview" class="thumb-preview" />
+								<button class="thumb-remove" onclick={removeThumbnail} title="Remove">×</button>
+							</div>
+						{:else if existingCoverUrl}
+							<div class="thumb-preview-wrap">
+								<img src={existingCoverUrl} alt="Current cover" class="thumb-preview" />
+							</div>
+							<label class="thumb-replace" for="thumbnail-input">Replace cover image</label>
+						{:else}
+							<label class="thumb-dropzone" for="thumbnail-input">
+								<span class="thumb-icon">🖼</span>
+								<span class="thumb-label">Click to upload cover image</span>
+								<span class="thumb-hint">JPG · PNG · WebP · recommended 3:4</span>
+							</label>
+						{/if}
 						<input
 							id="thumbnail-input"
 							type="file"
@@ -472,63 +798,154 @@
 							class="visually-hidden"
 							onchange={handleThumbnailChange}
 						/>
-					{/if}
-				</div>
-
-				<div class="form-divider">
-					<span>Choose a layout to start editing</span>
-				</div>
-
-				{#if createError}
-					<div class="create-error" role="alert" aria-live="assertive">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-							<circle cx="12" cy="12" r="10" />
-							<line x1="12" y1="8" x2="12" y2="12" />
-							<line x1="12" y1="16" x2="12.01" y2="16" />
-						</svg>
-						<span>{createError}</span>
-						<button type="button" class="create-error-close" aria-label="Dismiss" onclick={() => (createError = null)}>×</button>
 					</div>
-				{/if}
 
-				<div class="template-cards">
-					<!-- Template A: Classic 3×3 -->
-					<button
-						class="template-card"
-						onclick={() => selectTemplate('grid-3x3')}
-						disabled={creatingComic}
-					>
-						<div class="preview-grid preview-3x3">
-							{#each { length: 9 }, i (i)}
-								<div class="preview-cell"></div>
-							{/each}
+					{#if coverError}
+						<div class="create-error" role="alert" aria-live="assertive">
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+							>
+								<circle cx="12" cy="12" r="10" />
+								<line x1="12" y1="8" x2="12" y2="12" />
+								<line x1="12" y1="16" x2="12.01" y2="16" />
+							</svg>
+							<span>{coverError}</span>
+							<button
+								type="button"
+								class="create-error-close"
+								aria-label="Dismiss"
+								onclick={() => (coverError = null)}>×</button
+							>
 						</div>
-						<div class="template-card-info">
-							<span class="template-name">Classic 3×3</span>
-							<span class="template-desc">9 equal panels</span>
-						</div>
-					</button>
+					{/if}
 
-					<!-- Template B: Page Layout -->
-					<button
-						class="template-card"
-						onclick={() => selectTemplate('page-1-2-3')}
-						disabled={creatingComic}
-					>
-						<div class="preview-grid preview-page">
-							{#each { length: 6 }, i (i)}
-								<div class="preview-cell"></div>
-							{/each}
-						</div>
-						<div class="template-card-info">
-							<span class="template-name">Page Layout</span>
-							<span class="template-desc">6 panels · 1 + 2 + 3</span>
-						</div>
-					</button>
-				</div>
+					<div class="wizard-actions">
+						{#if comicState.comicId}
+							<button
+								class="wizard-btn wizard-btn-primary"
+								onclick={() => saveCoverAndContinue('edit')}
+								disabled={savingCover}
+							>
+								{savingCover ? 'Saving…' : 'Save & continue editing'}
+							</button>
+							<button
+								class="wizard-btn wizard-btn-secondary"
+								onclick={() => saveCoverAndContinue('layout')}
+								disabled={savingCover}
+							>
+								{savingCover ? 'Saving…' : 'Save & change layout'}
+							</button>
+							<button
+								class="wizard-btn wizard-btn-ghost"
+								onclick={cancelCoverEdit}
+								disabled={savingCover}
+							>
+								Cancel
+							</button>
+						{:else}
+							<button class="wizard-btn wizard-btn-primary" onclick={() => goToStep('layout')}>
+								Next: choose a layout →
+							</button>
+						{/if}
+					</div>
+				{:else}
+					<div>
+						<h2 class="picker-title">
+							{pendingNewPage !== null
+								? `Choose a layout for page ${pendingNewPage}`
+								: 'Choose a page layout'}
+						</h2>
+						<p class="picker-subtitle">
+							{pendingNewPage !== null
+								? 'The new page is added to your comic as soon as you pick a layout'
+								: comicState.comicId
+									? 'Pick a new layout for this page, or keep the current one'
+									: 'Pick how the panels are arranged — editing starts right after'}
+						</p>
+					</div>
 
-				{#if creatingComic}
-					<div class="creating-label">Creating your comic…</div>
+					{#if createError}
+						<div class="create-error" role="alert" aria-live="assertive">
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+							>
+								<circle cx="12" cy="12" r="10" />
+								<line x1="12" y1="8" x2="12" y2="12" />
+								<line x1="12" y1="16" x2="12.01" y2="16" />
+							</svg>
+							<span>{createError}</span>
+							<button
+								type="button"
+								class="create-error-close"
+								aria-label="Dismiss"
+								onclick={() => (createError = null)}>×</button
+							>
+						</div>
+					{/if}
+
+					<div class="template-cards">
+						{#each TEMPLATES as template (template.id)}
+							<button
+								class="template-card"
+								class:template-card-current={pendingNewPage === null &&
+									comicState.comicId !== null &&
+									template.id === comicState.templateId}
+								onclick={() => selectTemplate(template.id)}
+								disabled={creatingComic || addingPage}
+							>
+								<div class="preview-grid {template.previewClass}">
+									{#each { length: template.panelCount }, i (i)}
+										<div class="preview-cell"></div>
+									{/each}
+								</div>
+								<div class="template-card-info">
+									<span class="template-name">{template.name}</span>
+									<span class="template-desc">{template.description}</span>
+								</div>
+							</button>
+						{/each}
+					</div>
+
+					<div class="wizard-actions">
+						{#if pendingNewPage !== null}
+							<button
+								class="wizard-btn wizard-btn-ghost"
+								onclick={cancelAddPage}
+								disabled={addingPage}
+							>
+								Cancel — back to the editor
+							</button>
+						{:else}
+							{#if comicState.comicId}
+								<button class="wizard-btn wizard-btn-primary" onclick={() => goToStep('edit')}>
+									Keep current layout →
+								</button>
+							{/if}
+							<button
+								class="wizard-btn wizard-btn-ghost"
+								onclick={() => goToStep('cover')}
+								disabled={creatingComic}
+							>
+								← Back to cover
+							</button>
+						{/if}
+					</div>
+
+					{#if creatingComic}
+						<div class="creating-label">Creating your comic…</div>
+					{/if}
 				{/if}
 			</div>
 		</div>
@@ -539,15 +956,50 @@
 		<main class="studio-layout">
 			<!-- Canvas Grid -->
 			<section class="canvas-workspace">
-				<div class="comic-grid" class:template-page={comicState.templateId === 'page-1-2-3'}>
-					{#each comicState.panels as _panel, i (i)}
-						<Panel index={i} />
-					{/each}
+				<div class="workspace-inner">
+					{#if comicState.comicId}
+						<nav class="page-bar" aria-label="Comic pages">
+							{#each pageNumbers as n (n)}
+								<button
+									class="page-tab"
+									class:active={n === comicState.sheetNumber}
+									onclick={() => switchPage(n)}
+								>
+									Page {n}
+								</button>
+							{/each}
+							<button
+								class="page-tab page-tab-add"
+								onclick={addPage}
+								disabled={atPageCap}
+								title={atPageCap ? `Maximum of ${MAX_SHEETS} pages reached` : 'Add a new page'}
+							>
+								+ Add page
+							</button>
+						</nav>
+						{#if addPageError}
+							<p class="page-bar-error" role="alert">{addPageError}</p>
+						{/if}
+					{/if}
+					<div class="comic-grid {getTemplate(comicState.templateId).layoutClass}">
+						{#each comicState.panels as _panel, i (i)}
+							<Panel index={i} />
+						{/each}
+					</div>
 				</div>
 			</section>
 
 			<!-- Inspector Sidebar -->
 			<aside class="control-sidebar">
+				<div class="sidebar-card comic-title-card">
+					<span class="comic-title-text" title={comicState.title}>{comicState.title}</span>
+					<button
+						class="comic-title-edit"
+						onclick={() => goToStep('cover')}
+						title="Change title & cover"
+						aria-label="Change title & cover">✎</button
+					>
+				</div>
 				<div class="sidebar-card">
 					<label for="bubble-text-editor" class="card-label">Bubble Text:</label>
 					<textarea
@@ -591,12 +1043,8 @@
 						<BubbleButton type="box" label="Box" onclick={() => handleAddBubble('box')} />
 						<BubbleButton type="burst" label="Burst" onclick={() => handleAddBubble('burst')} />
 					</div>
-					
-					<button
-						class="save-button"
-						onclick={saveNow}
-						disabled={saveStatus === 'saving'}
-					>
+
+					<button class="save-button" onclick={saveNow} disabled={saveStatus === 'saving'}>
 						{#if saveStatus === 'saving'}Saving…{:else}Save{/if}
 					</button>
 					<div class="save-status" data-status={saveStatus}>
@@ -617,6 +1065,10 @@
 					{#if publishError}
 						<div style="margin-top:8px;color:#b91c1c">{publishError}</div>
 					{/if}
+					<button class="print-button" onclick={printComic}>🖨 Print</button>
+					<p class="print-hint">
+						Prints the current page — choose “Save as PDF” in the dialog to export
+					</p>
 				</div>
 			</aside>
 		</main>
@@ -625,8 +1077,12 @@
 	{#if publishModalOpen}
 		<div
 			class="modal-backdrop"
-			onclick={(e) => { if (e.target === e.currentTarget && !publishLoading) closePublishModal(); }}
-			onkeydown={(e) => { if (e.key === 'Escape' && !publishLoading) closePublishModal(); }}
+			onclick={(e) => {
+				if (e.target === e.currentTarget && !publishLoading) closePublishModal();
+			}}
+			onkeydown={(e) => {
+				if (e.key === 'Escape' && !publishLoading) closePublishModal();
+			}}
 			role="dialog"
 			aria-modal="true"
 			aria-live="polite"
@@ -644,7 +1100,9 @@
 					<h2 class="modal-title">Publish failed</h2>
 					<p class="modal-error-msg">{publishError}</p>
 					<div class="modal-actions">
-						<button class="modal-btn modal-btn-secondary" onclick={closePublishModal}>Dismiss</button>
+						<button class="modal-btn modal-btn-secondary" onclick={closePublishModal}
+							>Dismiss</button
+						>
 					</div>
 				{:else}
 					<button class="modal-close-x" onclick={closePublishModal} title="Close">✕</button>
@@ -661,11 +1119,7 @@
 								value={comicPublicUrl}
 								onclick={(e) => (e.target as HTMLInputElement).select()}
 							/>
-							<button
-								class="modal-copy-btn"
-								onclick={copyPublicUrl}
-								title="Copy link"
-							>
+							<button class="modal-copy-btn" onclick={copyPublicUrl} title="Copy link">
 								{#if urlCopied}✓{:else}📋{/if}
 							</button>
 						</div>
@@ -680,8 +1134,8 @@
 								href={comicPublicUrl}
 								target="_blank"
 								rel="external noreferrer noopener"
-								class="modal-btn modal-btn-primary"
-							>View Comic ↗</a>
+								class="modal-btn modal-btn-primary">View Comic ↗</a
+							>
 						{/if}
 						<button class="modal-btn modal-btn-secondary" onclick={closePublishModal}>Done</button>
 					</div>
@@ -694,10 +1148,13 @@
 <!-- Print View -->
 {#if isPrintMode}
 	<div class="print-only">
-		<div class="print-comic-grid" class:print-template-page={comicState.templateId === 'page-1-2-3'}>
+		<div class="print-comic-grid {getTemplate(comicState.templateId).printLayoutClass}">
 			{#each comicState.panels as panel, i (i)}
-				{#if panel.bgImageUrl}
-					<img src={panel.bgImageUrl} alt="Panel {i + 1}" class="print-panel" />
+				<!-- Prefer the flattened stage snapshot (background + bubbles + text);
+					 fall back to the raw background image if the snapshot failed. -->
+				{@const printSrc = printSnapshots[i] ?? panel.bgImageUrl}
+				{#if printSrc}
+					<img src={printSrc} alt="Panel {i + 1}" class="print-panel" />
 				{:else}
 					<div class="print-panel print-panel-empty"></div>
 				{/if}
@@ -744,6 +1201,137 @@
 		display: flex;
 		flex-direction: column;
 		gap: 24px;
+	}
+
+	/* ── Wizard chrome ── */
+	.wizard-steps {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	.wizard-step {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 7px 14px;
+		border: 2px solid #e2e8f0;
+		border-radius: 999px;
+		background: #fff;
+		color: #64748b;
+		font-size: 0.85rem;
+		font-weight: 700;
+		font-family: inherit;
+		cursor: pointer;
+		transition:
+			border-color 0.15s,
+			color 0.15s;
+	}
+
+	.wizard-step:hover:not([disabled]) {
+		border-color: #007f8a;
+		color: #007f8a;
+	}
+
+	.wizard-step.active {
+		border-color: #007f8a;
+		background: #f0fdfc;
+		color: #007f8a;
+	}
+
+	.wizard-step[disabled] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.wizard-step-num {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #e2e8f0;
+		color: #475569;
+		font-size: 0.75rem;
+		font-weight: 800;
+	}
+
+	.wizard-step.active .wizard-step-num {
+		background: #007f8a;
+		color: #fff;
+	}
+
+	.wizard-arrow {
+		color: #cbd5e1;
+		font-weight: 700;
+	}
+
+	.wizard-actions {
+		display: flex;
+		gap: 10px;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+
+	.wizard-btn {
+		padding: 10px 20px;
+		border-radius: 8px;
+		font-size: 0.92rem;
+		font-weight: 700;
+		font-family: inherit;
+		cursor: pointer;
+		border: 2px solid transparent;
+		transition:
+			background 0.15s,
+			border-color 0.15s;
+	}
+
+	.wizard-btn[disabled] {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.wizard-btn-primary {
+		background: #007f8a;
+		color: #fff;
+	}
+
+	.wizard-btn-primary:hover:not([disabled]) {
+		background: #005f68;
+	}
+
+	.wizard-btn-secondary {
+		background: #fff;
+		color: #007f8a;
+		border-color: #007f8a;
+	}
+
+	.wizard-btn-secondary:hover:not([disabled]) {
+		background: #f0fdfc;
+	}
+
+	.wizard-btn-ghost {
+		background: none;
+		color: #64748b;
+	}
+
+	.wizard-btn-ghost:hover:not([disabled]) {
+		color: #0f172a;
+	}
+
+	.thumb-replace {
+		align-self: flex-start;
+		font-size: 0.85rem;
+		font-weight: 700;
+		color: #007f8a;
+		cursor: pointer;
+		text-decoration: underline;
+	}
+
+	.thumb-replace:hover {
+		color: #005f68;
 	}
 
 	.picker-title {
@@ -810,7 +1398,9 @@
 		border-radius: 12px;
 		cursor: pointer;
 		background: #fff;
-		transition: border-color 0.15s, background 0.15s;
+		transition:
+			border-color 0.15s,
+			background 0.15s;
 		text-align: center;
 	}
 
@@ -904,6 +1494,13 @@
 		gap: 20px;
 		flex-wrap: wrap;
 		justify-content: center;
+		/* Break out of .picker-form's 600px max-width so up to 4 cards
+		   (4 × 260px + 3 × 20px gap = 1100px) fit per row on wide screens.
+		   Falls back to the viewport width minus side padding on smaller screens. */
+		width: min(1100px, calc(100vw - 32px));
+		position: relative;
+		left: 50%;
+		transform: translateX(-50%);
 	}
 
 	.create-error {
@@ -984,6 +1581,12 @@
 		transform: translateY(0) scale(0.99);
 	}
 
+	/* Layout currently saved for this comic */
+	.template-card-current {
+		border-color: #007f8a;
+		box-shadow: 0 0 0 3px rgba(0, 127, 138, 0.15);
+	}
+
 	/* Preview grids */
 	.preview-grid {
 		width: 100%;
@@ -1028,6 +1631,25 @@
 		grid-column: span 2;
 	}
 
+	.preview-strip {
+		grid-template-columns: repeat(3, 1fr);
+		grid-template-rows: 1fr;
+	}
+
+	.preview-vertical {
+		grid-template-columns: 1fr;
+		grid-template-rows: repeat(4, 1fr);
+	}
+
+	.preview-hero {
+		grid-template-columns: repeat(4, 1fr);
+		grid-template-rows: 2fr 1fr;
+	}
+
+	.preview-hero .preview-cell:nth-child(1) {
+		grid-column: 1 / -1;
+	}
+
 	.template-card-info {
 		display: flex;
 		flex-direction: column;
@@ -1062,6 +1684,69 @@
 		display: flex;
 		align-items: flex-start;
 		justify-content: center;
+	}
+
+	.workspace-inner {
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+
+	/* ── Page bar ── */
+	.page-bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.page-tab {
+		padding: 6px 14px;
+		border: 2px solid #cbd5e1;
+		border-radius: 999px;
+		background: #fff;
+		color: #475569;
+		font-size: 0.85rem;
+		font-weight: 700;
+		font-family: inherit;
+		cursor: pointer;
+		transition:
+			border-color 0.12s,
+			color 0.12s,
+			background 0.12s;
+	}
+
+	.page-tab:hover {
+		border-color: #007f8a;
+		color: #007f8a;
+	}
+
+	.page-tab.active {
+		background: #007f8a;
+		border-color: #007f8a;
+		color: #fff;
+	}
+
+	.page-tab-add {
+		border-style: dashed;
+	}
+
+	.page-tab:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	.page-tab:disabled:hover {
+		border-color: #cbd5e1;
+		color: #475569;
+	}
+
+	.page-bar-error {
+		margin: 6px 0 0;
+		color: #991b1b;
+		font-size: 0.85rem;
+		font-weight: 700;
 	}
 
 	/* ── Comic Grids ── */
@@ -1102,6 +1787,40 @@
 		aspect-ratio: 3 / 4;
 	}
 
+	/* Template C: Sunday Strip — 3 wide panels in one row */
+	.comic-grid.template-strip {
+		grid-template-columns: repeat(3, 1fr);
+	}
+
+	.comic-grid.template-strip :global(.panel-container) {
+		aspect-ratio: 4 / 3;
+	}
+
+	/* Template D: Webtoon Vertical — 4 panels stacked, narrow column */
+	.comic-grid.template-vertical {
+		grid-template-columns: 1fr;
+		max-width: 520px;
+		margin: 0 auto;
+	}
+
+	.comic-grid.template-vertical :global(.panel-container) {
+		aspect-ratio: 16 / 9;
+	}
+
+	/* Template E: Action Spread — 1 hero panel + 4 reactions */
+	.comic-grid.template-hero {
+		grid-template-columns: repeat(4, 1fr);
+	}
+
+	.comic-grid.template-hero :global(.panel-container:nth-child(1)) {
+		grid-column: 1 / -1;
+		aspect-ratio: 16 / 7;
+	}
+
+	.comic-grid.template-hero :global(.panel-container:nth-child(n + 2)) {
+		aspect-ratio: 1 / 1;
+	}
+
 	/* Responsive — tablet */
 	@media (max-width: 900px) {
 		.studio-layout {
@@ -1116,6 +1835,10 @@
 		.comic-grid.template-page :global(.panel-container:nth-child(n + 4)) {
 			grid-column: span 3;
 		}
+
+		.comic-grid.template-hero {
+			grid-template-columns: repeat(2, 1fr);
+		}
 	}
 
 	/* Responsive — phone */
@@ -1127,6 +1850,15 @@
 
 		.comic-grid.template-page :global(.panel-container) {
 			grid-column: 1 / -1;
+			aspect-ratio: 4 / 3;
+		}
+
+		.comic-grid.template-strip,
+		.comic-grid.template-hero {
+			grid-template-columns: 1fr;
+		}
+
+		.comic-grid.template-hero :global(.panel-container:nth-child(n + 2)) {
 			aspect-ratio: 4 / 3;
 		}
 	}
@@ -1159,6 +1891,48 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+	}
+
+	.comic-title-card {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 12px 16px;
+		margin-top: 16px;
+	}
+
+	.comic-title-text {
+		font-size: 0.95rem;
+		font-weight: 700;
+		color: #0f172a;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+
+	.comic-title-edit {
+		flex-shrink: 0;
+		width: 28px;
+		height: 28px;
+		border: 1px solid #e2e8f0;
+		border-radius: 6px;
+		background: #fff;
+		color: #475569;
+		font-size: 0.9rem;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition:
+			border-color 0.12s,
+			color 0.12s;
+	}
+
+	.comic-title-edit:hover {
+		border-color: #007f8a;
+		color: #007f8a;
 	}
 
 	.card-label {
@@ -1207,6 +1981,34 @@
 		cursor: not-allowed;
 	}
 
+	.print-button {
+		width: 100%;
+		margin-top: 8px;
+		padding: 10px 12px;
+		background: #fff;
+		border: 2px solid #334155;
+		color: #334155;
+		font-weight: 700;
+		border-radius: 8px;
+		cursor: pointer;
+		font-family: inherit;
+		transition:
+			background 0.12s,
+			color 0.12s;
+	}
+
+	.print-button:hover {
+		background: #334155;
+		color: #fff;
+	}
+
+	.print-hint {
+		margin: 4px 0 0;
+		font-size: 0.72rem;
+		color: #94a3b8;
+		text-align: center;
+	}
+
 	.save-button {
 		width: 100%;
 		padding: 10px 12px;
@@ -1216,7 +2018,9 @@
 		border-radius: 8px;
 		cursor: pointer;
 		font-family: inherit;
-		transition: background 0.12s, color 0.12s;
+		transition:
+			background 0.12s,
+			color 0.12s;
 		margin-bottom: 8px;
 	}
 	.save-button:hover:not([disabled]) {
@@ -1236,9 +2040,15 @@
 		min-height: 18px;
 		margin-bottom: 12px;
 	}
-	.save-status[data-status='saved'] { color: #16a34a; }
-	.save-status[data-status='error'] { color: #b91c1c; }
-	.save-status[data-status='dirty'] { color: #b45309; }
+	.save-status[data-status='saved'] {
+		color: #16a34a;
+	}
+	.save-status[data-status='error'] {
+		color: #b91c1c;
+	}
+	.save-status[data-status='dirty'] {
+		color: #b45309;
+	}
 	.save-dot {
 		width: 8px;
 		height: 8px;
@@ -1275,8 +2085,13 @@
 		font-weight: 700;
 	}
 	@keyframes save-pulse {
-		0%, 100% { opacity: 0.4; }
-		50% { opacity: 1; }
+		0%,
+		100% {
+			opacity: 0.4;
+		}
+		50% {
+			opacity: 1;
+		}
 	}
 
 	/* ── Publish modal ── */
@@ -1309,8 +2124,14 @@
 	}
 
 	@keyframes modal-in {
-		from { opacity: 0; transform: scale(0.88) translateY(16px); }
-		to   { opacity: 1; transform: scale(1)   translateY(0); }
+		from {
+			opacity: 0;
+			transform: scale(0.88) translateY(16px);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1) translateY(0);
+		}
 	}
 
 	.modal-close-x {
@@ -1330,7 +2151,9 @@
 		justify-content: center;
 		transition: background 0.12s;
 	}
-	.modal-close-x:hover { background: #e2e8f0; }
+	.modal-close-x:hover {
+		background: #e2e8f0;
+	}
 
 	.modal-icon {
 		width: 60px;
@@ -1406,7 +2229,9 @@
 		transition: background 0.12s;
 		flex-shrink: 0;
 	}
-	.modal-copy-btn:hover { background: #e2e8f0; }
+	.modal-copy-btn:hover {
+		background: #e2e8f0;
+	}
 
 	.modal-copied-hint {
 		font-size: 0.78rem;
@@ -1433,21 +2258,29 @@
 		text-align: center;
 		text-decoration: none;
 		border: none;
-		transition: background 0.12s, transform 0.1s;
+		transition:
+			background 0.12s,
+			transform 0.1s;
 	}
-	.modal-btn:active { transform: scale(0.97); }
+	.modal-btn:active {
+		transform: scale(0.97);
+	}
 
 	.modal-btn-primary {
 		background: #007f8a;
 		color: #fff;
 	}
-	.modal-btn-primary:hover { background: #005f68; }
+	.modal-btn-primary:hover {
+		background: #005f68;
+	}
 
 	.modal-btn-secondary {
 		background: #f1f5f9;
 		color: #334155;
 	}
-	.modal-btn-secondary:hover { background: #e2e8f0; }
+	.modal-btn-secondary:hover {
+		background: #e2e8f0;
+	}
 
 	/* Loading state */
 	.modal-loading {
@@ -1468,7 +2301,9 @@
 	}
 
 	@keyframes spin {
-		to { transform: rotate(360deg); }
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.modal-loading-title {
@@ -1492,6 +2327,21 @@
 	@media print {
 		.no-print {
 			display: none !important;
+		}
+
+		/* Overlays injected directly under <body> (dev toolbars, browser
+		   extensions, floating buttons) are position:fixed, sit outside this
+		   page's .no-print scope, and Chrome paints fixed elements onto every
+		   printed page — they showed up stamped over the comic. Hide everything
+		   in the document and re-show only the print view. visibility (not
+		   display) so the print view's ancestors keep their layout. */
+		:global(body *) {
+			visibility: hidden !important;
+		}
+
+		.print-only,
+		.print-only :global(*) {
+			visibility: visible !important;
 		}
 
 		@page {
@@ -1545,6 +2395,42 @@
 			height: 100%;
 		}
 
+		.print-comic-grid.print-template-strip {
+			grid-template-columns: repeat(3, 1fr);
+		}
+
+		.print-comic-grid.print-template-strip .print-panel,
+		.print-comic-grid.print-template-strip .print-panel-empty {
+			aspect-ratio: 4 / 3;
+		}
+
+		.print-comic-grid.print-template-vertical {
+			grid-template-columns: 1fr;
+			max-width: 5in;
+			margin: 0 auto;
+		}
+
+		.print-comic-grid.print-template-vertical .print-panel,
+		.print-comic-grid.print-template-vertical .print-panel-empty {
+			aspect-ratio: 16 / 9;
+		}
+
+		.print-comic-grid.print-template-hero {
+			grid-template-columns: repeat(4, 1fr);
+			grid-template-rows: 2fr 1fr;
+		}
+
+		.print-comic-grid.print-template-hero .print-panel:nth-child(1),
+		.print-comic-grid.print-template-hero .print-panel-empty:nth-child(1) {
+			grid-column: 1 / -1;
+		}
+
+		.print-comic-grid.print-template-hero .print-panel,
+		.print-comic-grid.print-template-hero .print-panel-empty {
+			aspect-ratio: unset;
+			height: 100%;
+		}
+
 		.print-panel,
 		.print-panel-empty {
 			width: 100%;
@@ -1552,6 +2438,12 @@
 			border: 4px solid #000;
 			box-sizing: border-box;
 			background: #fff;
+			/* Grid items default to min-width/height auto, which for an <img>
+			   is its intrinsic size — the 2× stage snapshots would force the
+			   1fr columns wider than the page and push the last column off the
+			   paper. Allow panels to shrink to their track instead. */
+			min-width: 0;
+			min-height: 0;
 		}
 
 		.print-panel {

@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { resolveSheetNumber } from '$lib/sheets';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -54,6 +55,14 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 	// Accept optional payload with template and panels/bubbles to persist before publishing
 	const payload: any = await request.json().catch(() => null);
 
+	// Page the client was editing when it hit Publish (sheets.number).
+	// Older clients never send it — default to 1. An out-of-range value
+	// (non-integer/NaN, < 1, or > MAX_SHEETS) is rejected rather than clamped,
+	// so it can't silently overwrite a different existing page.
+	const sheetNumber = resolveSheetNumber(payload?.sheetNumber);
+	if (sheetNumber === null)
+		return new Response(JSON.stringify({ error: 'Invalid sheetNumber' }), { status: 400 });
+
 	if (payload && (payload.templateId || payload.panels)) {
 		try {
 			const isUuid = (s: any) =>
@@ -76,51 +85,21 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				}
 			}
 
-			// Ensure sheet #1 exists. Throw on any error so the surrounding catch
-			// logs the failure and skips the pre-persist block entirely (publish
-			// can still proceed against existing DB rows).
-			const { data: sheetSelect, error: sheetSelectErr } = await locals.supabase
+			const sheetUpsert: { comic_id: string; number: number; template_id?: string } = {
+				comic_id: comicId,
+				number: sheetNumber
+			};
+			if (safeTemplateIdPub) sheetUpsert.template_id = safeTemplateIdPub;
+			const { data: sheetRow, error: sheetUpsertErr } = await locals.supabase
 				.from('sheets')
+				.upsert(sheetUpsert, { onConflict: 'comic_id,number' })
 				.select('id')
-				.eq('comic_id', comicId)
-				.eq('number', 1)
-				.maybeSingle();
-			if (sheetSelectErr) {
-				throw new Error(`sheet select failed: ${sheetSelectErr.message}`);
-			}
-			let sheetRow: { id: string } | null = sheetSelect as { id: string } | null;
-			if (!sheetRow) {
-				const { data: newSheet, error: newSheetErr } = await locals.supabase
-					.from('sheets')
-					.insert({
-						comic_id: comicId,
-						number: 1,
-						template_id: safeTemplateIdPub
-					})
-					.select('id')
-					.single();
-				if (newSheetErr || !newSheet || typeof (newSheet as any).id !== 'string') {
-					throw new Error(`sheet insert failed: ${newSheetErr?.message ?? 'missing id'}`);
-				}
-				sheetRow = newSheet as { id: string };
-			} else if (payload.templateId && safeTemplateIdPub) {
-				// Only update when slug resolved; otherwise we'd wipe the existing template.
-				if (typeof sheetRow.id !== 'string') {
-					throw new Error('invalid sheet record (missing id)');
-				}
-				const { error: tmplUpdErr } = await locals.supabase
-					.from('sheets')
-					.update({ template_id: safeTemplateIdPub })
-					.eq('id', sheetRow.id);
-				if (tmplUpdErr) {
-					throw new Error(`sheet template update failed: ${tmplUpdErr.message}`);
-				}
+				.single();
+			if (sheetUpsertErr || !sheetRow || typeof (sheetRow as any).id !== 'string') {
+				throw new Error(`sheet upsert failed: ${sheetUpsertErr?.message ?? 'missing id'}`);
 			}
 
-			const sheetId = sheetRow.id;
-			if (typeof sheetId !== 'string') {
-				throw new Error('resolved sheetId is not a string');
-			}
+			const sheetId = (sheetRow as { id: string }).id;
 
 			// Upsert panels and bubbles (simple approach: find panel by sheet_id + index)
 			if (Array.isArray(payload.panels)) {
@@ -206,9 +185,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 							z_index: typeof b.z_index === 'number' ? b.z_index : bi,
 							style: b.type ?? b.style ?? null
 						}));
-						const { error: bubbleInsErr } = await locals.supabase
-							.from('bubbles')
-							.insert(toInsert);
+						const { error: bubbleInsErr } = await locals.supabase.from('bubbles').insert(toInsert);
 						if (bubbleInsErr) console.error('publish: bubble insert failed', bubbleInsErr);
 					}
 				}
@@ -254,12 +231,41 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 				.from(bucket)
 				.download(path);
 			if (dlErr || !downloaded) {
-				const e = (dlErr ?? {}) as { message?: string; status?: number; name?: string };
+				const e = (dlErr ?? {}) as {
+					message?: string;
+					status?: number;
+					statusCode?: string | number;
+					name?: string;
+				};
+				// Orphaned row: the storage object is gone (e.g. it was replaced
+				// and the old file deleted while a legacy duplicate row still
+				// pointed at it) and nothing public references it. Drop the row
+				// instead of failing — otherwise one orphan permanently blocks
+				// publishing the whole comic. The panel simply renders without
+				// an image until the user re-uploads one.
+				const notFound =
+					e.status === 404 ||
+					e.statusCode === 404 ||
+					e.statusCode === '404' ||
+					/not.?found/i.test(e.message ?? '');
+				if (notFound) {
+					console.warn('[publish]', reqId, 'orphaned_image_dropped', {
+						image_id: img.id,
+						...(dev ? { path } : {})
+					});
+					const { error: delErr } = await locals.supabase.from('images').delete().eq('id', img.id);
+					if (delErr) {
+						console.error('[publish]', reqId, 'orphaned_image_delete_failed', {
+							image_id: img.id
+						});
+					}
+					continue;
+				}
 				console.error('[publish]', reqId, 'image_download', {
 					image_id: img.id,
 					status: e.status,
 					name: e.name,
-					...(dev ? { message: e.message } : {})
+					...(dev ? { message: e.message, path } : {})
 				});
 				results.push({ id: img.id, failed: true });
 				failedCount++;
