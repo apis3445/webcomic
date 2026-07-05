@@ -454,91 +454,93 @@
 						>
 							‹
 						</button>
-						{#key safeSpreadIndex}
-							<div
-								class="mag-spread"
-								class:mag-turning={turnDrag !== null}
-								in:fade={{ duration: 180 }}
-							>
-								{#each currentSpread as pageEntry, pi (pageEntry.sheet.id)}
-									{@const side = pi === 0 ? 'left' : 'right'}
-									<div class="mag-page" class:mag-page-hidden={hiddenForFlip(side)}>
-										{@render pageGrid(pageEntry)}
-										<div class="mag-page-num">Page {pageEntry.sheet.number}</div>
-									</div>
-								{/each}
-								{#if currentSpread.length === 1}
-									<!-- Lone last page: blank right half so the book keeps its
+						<!-- No key/fade on spread changes: after a page turn the sheet's
+						     back face already shows the new spread's content in place, so
+						     re-mounting the spread and fading it in from transparent reads
+						     as a flicker. The pages inside swap instantly instead. -->
+						<div class="mag-spread" class:mag-turning={turnDrag !== null}>
+							{#each currentSpread as pageEntry, pi (pageEntry.sheet.id)}
+								{@const side = pi === 0 ? 'left' : 'right'}
+								<div class="mag-page" class:mag-page-hidden={hiddenForFlip(side)}>
+									{@render pageGrid(pageEntry)}
+									<div class="mag-page-num">Page {pageEntry.sheet.number}</div>
+								</div>
+							{/each}
+							{#if currentSpread.length === 1}
+								<!-- Lone last page: blank right half so the book keeps its
 								     two-page shape and flips stay continuous. -->
-									<div class="mag-page mag-page-blank" aria-hidden="true"></div>
-								{/if}
+								<div class="mag-page mag-page-blank" aria-hidden="true"></div>
+							{/if}
 
-								{#if flipParts && turnDrag}
-									{@const onRight = turnDrag.dir === 'next'}
-									<!-- Page revealed underneath the lifting sheet -->
-									<div
-										class="mag-underlay"
-										class:mag-half-right={onRight}
-										class:mag-half-left={!onRight}
-									>
-										{#if flipParts.under}
+							{#if flipParts && turnDrag}
+								{@const onRight = turnDrag.dir === 'next'}
+								<!-- Page revealed underneath the lifting sheet -->
+								<div
+									class="mag-underlay"
+									class:mag-half-right={onRight}
+									class:mag-half-left={!onRight}
+								>
+									{#if flipParts.under}
+										<div class="mag-page mag-page-fill">
+											{@render pageGrid(flipParts.under)}
+											<div class="mag-page-num">Page {flipParts.under.sheet.number}</div>
+										</div>
+									{:else}
+										<!-- Landing on a lone last page: match the static blank half
+								     so nothing jumps when the sheet is removed. -->
+										<div class="mag-page mag-page-fill mag-page-blank" aria-hidden="true"></div>
+									{/if}
+								</div>
+								<!-- The folding sheet itself: front face is the page being
+							     turned, back face is the page that lands face-up. -->
+								<div
+									class="mag-sheet"
+									class:mag-half-right={onRight}
+									class:mag-half-left={!onRight}
+									class:mag-sheet-settling={turnDrag.settling !== null}
+									style={sheetStyle()}
+									ontransitionend={onSheetSettled}
+								>
+									<div class="mag-sheet-face mag-sheet-front">
+										<div class="mag-page mag-page-fill">
+											{@render pageGrid(flipParts.front)}
+											<div class="mag-page-num">Page {flipParts.front.sheet.number}</div>
+										</div>
+									</div>
+									<div class="mag-sheet-face mag-sheet-back">
+										{#if flipParts.back}
 											<div class="mag-page mag-page-fill">
-												{@render pageGrid(flipParts.under)}
-												<div class="mag-page-num">Page {flipParts.under.sheet.number}</div>
+												{@render pageGrid(flipParts.back)}
+												<div class="mag-page-num">Page {flipParts.back.sheet.number}</div>
 											</div>
 										{/if}
 									</div>
-									<!-- The folding sheet itself: front face is the page being
-							     turned, back face is the page that lands face-up. -->
-									<div
-										class="mag-sheet"
-										class:mag-half-right={onRight}
-										class:mag-half-left={!onRight}
-										class:mag-sheet-settling={turnDrag.settling !== null}
-										style={sheetStyle()}
-										ontransitionend={onSheetSettled}
-									>
-										<div class="mag-sheet-face mag-sheet-front">
-											<div class="mag-page mag-page-fill">
-												{@render pageGrid(flipParts.front)}
-												<div class="mag-page-num">Page {flipParts.front.sheet.number}</div>
-											</div>
-										</div>
-										<div class="mag-sheet-face mag-sheet-back">
-											{#if flipParts.back}
-												<div class="mag-page mag-page-fill">
-													{@render pageGrid(flipParts.back)}
-													<div class="mag-page-num">Page {flipParts.back.sheet.number}</div>
-												</div>
-											{/if}
-										</div>
-									</div>
-								{/if}
-								<!-- Edge grips: drag a page border toward the spine to turn it.
+								</div>
+							{/if}
+							<!-- Edge grips: drag a page border toward the spine to turn it.
 						     Decorative duplicates of the arrow buttons (which remain the
 						     accessible navigation), hence aria-hidden. -->
-								{#if safeSpreadIndex < spreads.length - 1}
-									<div
-										class="mag-turn-zone mag-turn-zone-right"
-										onpointerdown={(e) => startTurn(e, 'next')}
-										onpointermove={moveTurn}
-										onpointerup={endTurn}
-										onpointercancel={endTurn}
-										aria-hidden="true"
-									></div>
-								{/if}
-								{#if safeSpreadIndex > 0}
-									<div
-										class="mag-turn-zone mag-turn-zone-left"
-										onpointerdown={(e) => startTurn(e, 'prev')}
-										onpointermove={moveTurn}
-										onpointerup={endTurn}
-										onpointercancel={endTurn}
-										aria-hidden="true"
-									></div>
-								{/if}
-							</div>
-						{/key}
+							{#if safeSpreadIndex < spreads.length - 1}
+								<div
+									class="mag-turn-zone mag-turn-zone-right"
+									onpointerdown={(e) => startTurn(e, 'next')}
+									onpointermove={moveTurn}
+									onpointerup={endTurn}
+									onpointercancel={endTurn}
+									aria-hidden="true"
+								></div>
+							{/if}
+							{#if safeSpreadIndex > 0}
+								<div
+									class="mag-turn-zone mag-turn-zone-left"
+									onpointerdown={(e) => startTurn(e, 'prev')}
+									onpointermove={moveTurn}
+									onpointerup={endTurn}
+									onpointercancel={endTurn}
+									aria-hidden="true"
+								></div>
+							{/if}
+						</div>
 						<button
 							class="mag-nav"
 							onclick={nextSpread}
