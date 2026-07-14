@@ -45,9 +45,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
 
-	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
-	if (userErr || !userId)
+	// Verified JWT claims; sub is the user id.
+	const { data: claimsData, error: claimsErr } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
+	if (claimsErr || !userId)
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
 
 	const { data: comicRow, error: comicErr } = await locals.supabase
@@ -62,8 +63,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const form = await request.formData();
 	const file = form.get('file') as File | null;
-	if (!file)
-		return new Response(JSON.stringify({ error: 'file is required' }), { status: 400 });
+	if (!file) return new Response(JSON.stringify({ error: 'file is required' }), { status: 400 });
 
 	const arrayBuffer = await file.arrayBuffer();
 	const uint8 = new Uint8Array(arrayBuffer);

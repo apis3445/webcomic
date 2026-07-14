@@ -1,9 +1,9 @@
 <script>
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 
 	const error = $derived(
-		$page.url.searchParams.get('error_description') ?? 'Something went wrong during sign in.'
+		page.url.searchParams.get('error_description') ?? 'Something went wrong during sign in.'
 	);
 </script>
 
@@ -47,7 +47,9 @@
 <style>
 	.wrap {
 		position: relative;
-		min-height: calc(100vh - 64px);
+		/* Full viewport: this page lives outside the (main) layout group, so
+		   there is no navbar to subtract. */
+		min-height: 100dvh;
 		display: flex;
 		align-items: center;
 		justify-content: center;

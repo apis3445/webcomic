@@ -186,10 +186,13 @@
 	let suppressNextAutosave = false;
 	// In-flight guard: prevents two saveNow() calls from racing into the same comic.
 	let saveInFlight = false;
-	// The currently running save, exposed so saveNow() can hand callers a promise
-	// that resolves only when the underlying request finishes. Explicit user
-	// actions (page switch / new page) await this to guarantee persistence before
-	// they swap pages.
+	// Set while a follow-up save is queued behind the in-flight one; dedupes
+	// repeated saveNow() calls during a save into a single queued run.
+	let saveQueued = false;
+	// The whole pending save chain: the in-flight save plus any follow-up
+	// queued behind it. saveNow() always stores the full chain here, so
+	// awaiting it (see drainSaves) covers queued saves too — the delete flow
+	// relies on that to know no late save can run after it.
 	let savePromise: Promise<void> | null = null;
 	const AUTOSAVE_DEBOUNCE_MS = 1500;
 
@@ -226,11 +229,47 @@
 	function saveNow(): Promise<void> {
 		const cid = comicState.comicId;
 		if (!cid) return Promise.resolve();
-		if (saveInFlight) {
-			return (savePromise ?? Promise.resolve()).then(() => saveNow());
+		// A queued follow-up counts as "in progress" too: after the in-flight
+		// save finishes there is a microtask window where saveInFlight is
+		// already false but the queued .then below hasn't started doSave yet.
+		// Without the saveQueued check, a saveNow() landing in that window
+		// would start a parallel save and overwrite savePromise, hiding the
+		// queued save from drainSaves() (and the delete flow's guarantee).
+		if (saveInFlight || saveQueued) {
+			// Queue (at most) one follow-up save behind the in-flight one and
+			// store the extended chain in savePromise, so anyone awaiting the
+			// chain also waits out the queued save. One not-yet-started
+			// follow-up is enough: it snapshots state when it starts, so it
+			// picks up every edit made before then. Once it *has* started
+			// (saveQueued false, saveInFlight true again), a new saveNow()
+			// correctly queues the next follow-up behind it.
+			if (!saveQueued) {
+				saveQueued = true;
+				savePromise = (savePromise ?? Promise.resolve()).then(() => {
+					// Clearing the flag here (start, not finish) is safe: doSave
+					// synchronously sets saveInFlight before its first await, so
+					// there is no point where both flags are false with work
+					// still pending.
+					saveQueued = false;
+					const currentCid = comicState.comicId;
+					return currentCid ? doSave(currentCid) : undefined;
+				});
+			}
+			return savePromise ?? Promise.resolve();
 		}
 		savePromise = doSave(cid);
 		return savePromise;
+	}
+
+	// Resolves once the save queue is fully drained: the in-flight save plus
+	// any follow-up saveNow() queued while it ran. The chain can grow while we
+	// await it, so re-check until it stops changing.
+	async function drainSaves(): Promise<void> {
+		let chain = savePromise;
+		while (chain) {
+			await chain;
+			chain = savePromise !== chain ? savePromise : null;
+		}
 	}
 
 	async function doSave(cid: string): Promise<void> {
@@ -273,7 +312,9 @@
 			saveStatus = 'error';
 		} finally {
 			saveInFlight = false;
-			savePromise = null;
+			// Deliberately don't clear savePromise here: a follow-up save may
+			// already be chained onto it, and nulling it would hide that queued
+			// save from drainSaves(). A settled leftover chain awaits instantly.
 		}
 	}
 
@@ -585,14 +626,21 @@
 		deletingPage = true;
 		pageBarError = null;
 		try {
-			// The page is going away: cancel its pending autosave and wait out any
-			// in-flight save, so a late save (which upserts the sheet) can't
-			// recreate the row server-side after the delete.
+			// The page is going away: cancel its pending autosave and drain the
+			// whole save queue (in-flight save plus any follow-up queued behind
+			// it), so a late save (which upserts the sheet) can't recreate the
+			// row server-side after the delete.
 			if (saveTimer) {
 				clearTimeout(saveTimer);
 				saveTimer = null;
 			}
-			await (savePromise ?? Promise.resolve());
+			await drainSaves();
+			// A save that finished dirty may have re-scheduled the autosave
+			// while we drained — cancel that one too before deleting.
+			if (saveTimer) {
+				clearTimeout(saveTimer);
+				saveTimer = null;
+			}
 			const res = await fetch(`/api/comics/${cid}/sheets/${n}`, { method: 'DELETE' });
 			const body = await res.json().catch(() => null);
 			if (!res.ok) {

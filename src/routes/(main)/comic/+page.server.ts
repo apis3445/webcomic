@@ -81,12 +81,18 @@ function toBubbleType(style: string | null): BubbleType {
 	return style && KNOWN_BUBBLE_TYPES.has(style as BubbleType) ? (style as BubbleType) : 'box';
 }
 
-export const load: PageServerLoad = async ({ url, locals }) => {
+export const load: PageServerLoad = async ({ url, locals, depends }) => {
+	// This load's result is derived from the signed-in user (owner check
+	// below), so re-run it when the session changes — the root layout
+	// invalidates 'supabase:auth' on every auth state change.
+	depends('supabase:auth');
+
 	const id = url.searchParams.get('id');
 	if (!id) return { comic: null };
 
-	const { data: userData } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
+	// Verified JWT claims; sub is the user id (drives the owner check below).
+	const { data: claimsData } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
 	if (!userId) return { comic: null };
 
 	const { data: comicRaw, error: comicErr } = await locals.supabase

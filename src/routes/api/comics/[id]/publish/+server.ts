@@ -36,10 +36,10 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
 
-	// Ensure user is owner
-	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
-	if (userErr || !userId)
+	// Ensure user is owner (verified JWT claims; sub is the user id)
+	const { data: claimsData, error: claimsErr } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
+	if (claimsErr || !userId)
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
 
 	const { data: comicRow, error: comicErr } = await locals.supabase
