@@ -36,7 +36,9 @@
 				<h1 class="hero-title">
 					<Logo size="lg" />
 				</h1>
-				<p class="hero-sub">Mash your pages into a zine — drop photos, panels and doodles into a comic universe.</p>
+				<p class="hero-sub">
+					Mash your pages into a zine — drop photos, panels and doodles into a comic universe.
+				</p>
 			</div>
 		</div>
 
@@ -195,7 +197,6 @@
 					{/if}
 				</div>
 			</div>
-
 		</div>
 	</section>
 </div>

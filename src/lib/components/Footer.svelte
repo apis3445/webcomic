@@ -37,7 +37,7 @@
 		z-index: 1;
 		border-top: 2px solid rgba(26, 35, 126, 0.18);
 		margin: 0 auto;
-		padding: .8rem;
+		padding: 0.8rem;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;

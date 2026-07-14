@@ -1142,8 +1142,7 @@
 						class="bubble-textarea"
 						placeholder="Type speech bubble text here..."
 						value={bubbleText}
-						oninput={handleTextChange}
-					></textarea>
+						oninput={handleTextChange}></textarea>
 					<div class="bubble-palette-grid">
 						<BubbleButton
 							type="left-oval"

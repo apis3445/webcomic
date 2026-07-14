@@ -2,12 +2,7 @@
 // adding one entry here and one block of CSS in each grid root that should
 // render it (editor, published view, print, picker preview).
 
-export type TemplateId =
-	| 'grid-3x3'
-	| 'page-1-2-3'
-	| 'strip-3'
-	| 'vertical-4'
-	| 'hero-5';
+export type TemplateId = 'grid-3x3' | 'page-1-2-3' | 'strip-3' | 'vertical-4' | 'hero-5';
 
 export interface TemplateDefinition {
 	id: TemplateId;
@@ -73,9 +68,7 @@ export const TEMPLATES: TemplateDefinition[] = [
 
 export const DEFAULT_TEMPLATE_ID: TemplateId = 'grid-3x3';
 
-const TEMPLATE_BY_ID = new Map<TemplateId, TemplateDefinition>(
-	TEMPLATES.map((t) => [t.id, t])
-);
+const TEMPLATE_BY_ID = new Map<TemplateId, TemplateDefinition>(TEMPLATES.map((t) => [t.id, t]));
 
 export function getTemplate(id: TemplateId): TemplateDefinition {
 	return TEMPLATE_BY_ID.get(id) ?? TEMPLATE_BY_ID.get(DEFAULT_TEMPLATE_ID)!;
@@ -87,10 +80,7 @@ export function isTemplateId(value: unknown): value is TemplateId {
 
 // Resolve a template from a possibly-unknown slug, falling back to inferring
 // by panel count (legacy rows pre-date the slug column).
-export function resolveTemplateId(
-	slug: string | null | undefined,
-	panelCount: number
-): TemplateId {
+export function resolveTemplateId(slug: string | null | undefined, panelCount: number): TemplateId {
 	if (isTemplateId(slug)) return slug;
 	const match = TEMPLATES.find((t) => t.panelCount === panelCount);
 	return match?.id ?? DEFAULT_TEMPLATE_ID;

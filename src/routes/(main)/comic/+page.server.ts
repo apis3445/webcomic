@@ -177,21 +177,19 @@ export const load: PageServerLoad = async ({ url, locals, depends }) => {
 	const toLoadedPanel = (p: PanelRow, i: number): LoadedPanel => ({
 		index: typeof p.index === 'number' ? p.index : i + 1,
 		imageUrl: imageUrlByPanel.get(p.id) ?? null,
-		bubbles: (bubblesByPanel.get(p.id) ?? []).map(
-			(b, bi): Bubble => ({
-				id: bi + 1,
-				text: b.text ?? '',
-				x: b.x ?? 0,
-				y: b.y ?? 0,
-				width: b.w ?? 140,
-				height: b.h ?? 50,
-				type: toBubbleType(b.style),
-				// Fallback to insertion order so legacy bubbles (all z_index=0) get
-				// a deterministic, stable order on first reload instead of "whatever
-				// the DB returned this time".
-				z_index: typeof b.z_index === 'number' ? b.z_index : bi
-			})
-		)
+		bubbles: (bubblesByPanel.get(p.id) ?? []).map((b, bi): Bubble => ({
+			id: bi + 1,
+			text: b.text ?? '',
+			x: b.x ?? 0,
+			y: b.y ?? 0,
+			width: b.w ?? 140,
+			height: b.h ?? 50,
+			type: toBubbleType(b.style),
+			// Fallback to insertion order so legacy bubbles (all z_index=0) get
+			// a deterministic, stable order on first reload instead of "whatever
+			// the DB returned this time".
+			z_index: typeof b.z_index === 'number' ? b.z_index : bi
+		}))
 	});
 
 	const loadedSheets: LoadedSheet[] = sheets.map((s) => ({

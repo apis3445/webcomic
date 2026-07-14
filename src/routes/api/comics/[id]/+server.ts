@@ -28,7 +28,6 @@ async function listAllObjects(
 		// advance `offset` until a page returns fewer rows than requested,
 		// which is the documented end-of-listing signal.
 		let offset = 0;
-		// eslint-disable-next-line no-constant-condition
 		while (true) {
 			const { data, error } = await supabase.storage
 				.from(bucket)
