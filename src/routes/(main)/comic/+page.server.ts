@@ -81,7 +81,12 @@ function toBubbleType(style: string | null): BubbleType {
 	return style && KNOWN_BUBBLE_TYPES.has(style as BubbleType) ? (style as BubbleType) : 'box';
 }
 
-export const load: PageServerLoad = async ({ url, locals }) => {
+export const load: PageServerLoad = async ({ url, locals, depends }) => {
+	// This load's result is derived from the signed-in user (owner check
+	// below), so re-run it when the session changes — the root layout
+	// invalidates 'supabase:auth' on every auth state change.
+	depends('supabase:auth');
+
 	const id = url.searchParams.get('id');
 	if (!id) return { comic: null };
 

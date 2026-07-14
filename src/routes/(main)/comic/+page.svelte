@@ -229,15 +229,27 @@
 	function saveNow(): Promise<void> {
 		const cid = comicState.comicId;
 		if (!cid) return Promise.resolve();
-		if (saveInFlight) {
+		// A queued follow-up counts as "in progress" too: after the in-flight
+		// save finishes there is a microtask window where saveInFlight is
+		// already false but the queued .then below hasn't started doSave yet.
+		// Without the saveQueued check, a saveNow() landing in that window
+		// would start a parallel save and overwrite savePromise, hiding the
+		// queued save from drainSaves() (and the delete flow's guarantee).
+		if (saveInFlight || saveQueued) {
 			// Queue (at most) one follow-up save behind the in-flight one and
 			// store the extended chain in savePromise, so anyone awaiting the
-			// chain also waits out the queued save. One follow-up is enough:
-			// it snapshots state when it starts, so it picks up every edit
-			// made while the first request was in flight.
+			// chain also waits out the queued save. One not-yet-started
+			// follow-up is enough: it snapshots state when it starts, so it
+			// picks up every edit made before then. Once it *has* started
+			// (saveQueued false, saveInFlight true again), a new saveNow()
+			// correctly queues the next follow-up behind it.
 			if (!saveQueued) {
 				saveQueued = true;
 				savePromise = (savePromise ?? Promise.resolve()).then(() => {
+					// Clearing the flag here (start, not finish) is safe: doSave
+					// synchronously sets saveInFlight before its first await, so
+					// there is no point where both flags are false with work
+					// still pending.
 					saveQueued = false;
 					const currentCid = comicState.comicId;
 					return currentCid ? doSave(currentCid) : undefined;

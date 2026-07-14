@@ -1,9 +1,9 @@
 <script>
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 
 	const error = $derived(
-		$page.url.searchParams.get('error_description') ?? 'Something went wrong during sign in.'
+		page.url.searchParams.get('error_description') ?? 'Something went wrong during sign in.'
 	);
 </script>
 
