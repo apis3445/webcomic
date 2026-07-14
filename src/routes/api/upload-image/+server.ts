@@ -20,14 +20,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!file) return new Response(JSON.stringify({ error: 'file is required' }), { status: 400 });
 
 	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	if (dev) console.log('upload-image auth.getUser result', { userData, userErr });
 	const userId = userData?.user?.id;
 	if (userErr || !userId) {
 		console.error('upload-image: no authenticated user', { userErr });
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
-	} else if (dev) {
-		console.log('upload-image: authenticated userId', userId);
-	}
+	} 
 
 	// Ensure comic exists
 	if (!comicId) {

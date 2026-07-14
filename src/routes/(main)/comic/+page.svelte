@@ -34,8 +34,8 @@
 	let thumbnailPreviewUrl = $state<string | null>(null);
 	let creatingComic = $state(false);
 	let createError = $state<string | null>(null);
-	// Surfaced when the user tries to add a page past the MAX_SHEETS cap.
-	let addPageError = $state<string | null>(null);
+	// Surfaced under the page bar: add-page cap errors and delete-page failures.
+	let pageBarError = $state<string | null>(null);
 	let savingCover = $state(false);
 	let coverError = $state<string | null>(null);
 	let isPrintMode = $state(false);
@@ -65,6 +65,8 @@
 	// template-card click inside that window would add the same page twice
 	// (duplicate keys in the page bar).
 	let addingPage = $state(false);
+	// Re-entry guard for deleteCurrentPage; also drives the button's busy label.
+	let deletingPage = $state(false);
 
 	// One flattened image per panel (Konva stage.toDataURL) used by the print
 	// view, so speech bubbles and text print along with the background. null
@@ -501,16 +503,28 @@
 		});
 	}
 
+	// Page number a save-then-switch is waiting on; drives the spinner in the
+	// page bar and blocks concurrent switches while the save is in flight.
+	let switchingToPage = $state<number | null>(null);
+
 	async function switchPage(n: number) {
-		if (n === comicState.sheetNumber) return;
+		if (n === comicState.sheetNumber || switchingToPage !== null) return;
 		const target = sheetCache.get(n);
 		if (!target) return;
 		// Save the page being left before swapping it out — its edits only
 		// live in comicState. Block the switch if the save fails so nothing
-		// is stranded.
+		// is stranded. When the page has no unsaved edits (and no save is in
+		// flight), skip the round trip so the switch is instant.
 		stashCurrentSheet();
-		await saveNow();
-		if (saveStatus === 'error') return;
+		if (saveInFlight || buildSnapshot() !== lastSavedSnapshot) {
+			switchingToPage = n;
+			try {
+				await saveNow();
+			} finally {
+				switchingToPage = null;
+			}
+			if (saveStatus === 'error') return;
+		}
 		suppressNextAutosave = true;
 		comicState.loadSheet(target);
 	}
@@ -520,10 +534,10 @@
 		// Enforce the shared cap so we never create a page the API would reject
 		// (or, previously, silently clamp onto an existing page).
 		if (next > MAX_SHEETS) {
-			addPageError = `A comic can have at most ${MAX_SHEETS} pages.`;
+			pageBarError = `A comic can have at most ${MAX_SHEETS} pages.`;
 			return;
 		}
-		addPageError = null;
+		pageBarError = null;
 		pendingNewPage = next;
 		step = 'layout';
 	}
@@ -559,6 +573,65 @@
 	function cancelAddPage() {
 		pendingNewPage = null;
 		step = 'edit';
+	}
+
+	async function deleteCurrentPage() {
+		const cid = comicState.comicId;
+		const n = comicState.sheetNumber;
+		if (!cid || deletingPage || pageNumbers.length <= 1) return;
+		if (!confirm(`Delete page ${n}? Its panels, images and speech bubbles will be lost.`)) {
+			return;
+		}
+		deletingPage = true;
+		pageBarError = null;
+		try {
+			// The page is going away: cancel its pending autosave and wait out any
+			// in-flight save, so a late save (which upserts the sheet) can't
+			// recreate the row server-side after the delete.
+			if (saveTimer) {
+				clearTimeout(saveTimer);
+				saveTimer = null;
+			}
+			await (savePromise ?? Promise.resolve());
+			const res = await fetch(`/api/comics/${cid}/sheets/${n}`, { method: 'DELETE' });
+			const body = await res.json().catch(() => null);
+			if (!res.ok) {
+				pageBarError = body?.error ?? 'Could not delete the page. Please try again.';
+				return;
+			}
+			// Mirror the server: drop the page and apply its renumbering (later
+			// pages shift down one). Order is preserved, so the remaining old
+			// numbers map positionally onto the server-reported new ones; if the
+			// server couldn't report them, compute the expected shift locally.
+			const deletedPos = pageNumbers.indexOf(n);
+			const oldNumbers = pageNumbers.filter((p) => p !== n);
+			const newNumbers: number[] =
+				Array.isArray(body?.pageNumbers) && body.pageNumbers.length === oldNumbers.length
+					? body.pageNumbers
+					: oldNumbers.map((p) => (p > n ? p - 1 : p));
+			const remapped = new SvelteMap<number, SheetData>();
+			oldNumbers.forEach((oldN, i) => {
+				const sheet = sheetCache.get(oldN);
+				if (!sheet) return;
+				sheet.number = newNumbers[i];
+				remapped.set(newNumbers[i], sheet);
+			});
+			sheetCache = remapped;
+			pageNumbers = [...newNumbers];
+			// Show the page that took the deleted page's place (or the new last page).
+			const target = sheetCache.get(
+				newNumbers[Math.min(Math.max(deletedPos, 0), newNumbers.length - 1)]
+			);
+			if (target) {
+				suppressNextAutosave = true;
+				comicState.loadSheet(target);
+			}
+		} catch (e: unknown) {
+			console.error('deleteCurrentPage failed', e);
+			pageBarError = 'Network error. Please check your connection and try again.';
+		} finally {
+			deletingPage = false;
+		}
 	}
 
 	// Persist title + cover changes for an existing comic, then move on.
@@ -964,8 +1037,12 @@
 									class="page-tab"
 									class:active={n === comicState.sheetNumber}
 									onclick={() => switchPage(n)}
+									disabled={switchingToPage !== null}
 								>
 									Page {n}
+									{#if switchingToPage === n}
+										<span class="page-tab-spinner" aria-label="Saving…"></span>
+									{/if}
 								</button>
 							{/each}
 							<button
@@ -976,9 +1053,19 @@
 							>
 								+ Add page
 							</button>
+							<button
+								class="page-tab page-tab-delete"
+								onclick={deleteCurrentPage}
+								disabled={pageNumbers.length <= 1 || deletingPage}
+								title={pageNumbers.length <= 1
+									? 'A comic must keep at least one page'
+									: `Delete page ${comicState.sheetNumber}`}
+							>
+								{deletingPage ? 'Deleting…' : '🗑 Delete page'}
+							</button>
 						</nav>
-						{#if addPageError}
-							<p class="page-bar-error" role="alert">{addPageError}</p>
+						{#if pageBarError}
+							<p class="page-bar-error" role="alert">{pageBarError}</p>
 						{/if}
 					{/if}
 					<div class="comic-grid {getTemplate(comicState.templateId).layoutClass}">
@@ -1732,9 +1819,30 @@
 		border-style: dashed;
 	}
 
+	.page-tab-delete {
+		border-style: dashed;
+	}
+
+	.page-tab-delete:hover:not(:disabled) {
+		border-color: #be123c;
+		color: #be123c;
+	}
+
 	.page-tab:disabled {
 		cursor: not-allowed;
 		opacity: 0.5;
+	}
+
+	.page-tab-spinner {
+		display: inline-block;
+		width: 0.85em;
+		height: 0.85em;
+		margin-left: 6px;
+		vertical-align: -0.1em;
+		border-radius: 50%;
+		border: 2px solid #cbd5e1;
+		border-top-color: #007f8a;
+		animation: spin 0.8s linear infinite;
 	}
 
 	.page-tab:disabled:hover {
@@ -2404,15 +2512,23 @@
 			aspect-ratio: 4 / 3;
 		}
 
+		/* Sized from the page height, not a fixed width: four 16:9 panels at a
+		   fixed width overflow the printable height of a letter page and spill
+		   the last panel onto a second sheet. Split the height into equal rows
+		   and derive each panel's width from its row height instead. */
 		.print-comic-grid.print-template-vertical {
 			grid-template-columns: 1fr;
-			max-width: 5in;
-			margin: 0 auto;
+			grid-template-rows: repeat(4, minmax(0, 1fr));
+			height: 100%;
+			justify-items: center;
 		}
 
 		.print-comic-grid.print-template-vertical .print-panel,
 		.print-comic-grid.print-template-vertical .print-panel-empty {
 			aspect-ratio: 16 / 9;
+			width: auto;
+			height: 100%;
+			max-width: 100%;
 		}
 
 		.print-comic-grid.print-template-hero {

@@ -34,8 +34,7 @@ export const actions: Actions = {
 			locals: { supabase }
 		} = event;
 		const reqId = newCorrelationId();
-		console.log('[magicLink]', reqId, 'invoked', { host: url.host });
-
+		
 		const formData = await request.formData();
 		const email = (formData.get('email') ?? '').toString().trim();
 
@@ -88,7 +87,6 @@ export const actions: Actions = {
 			});
 		}
 
-		console.log('[magicLink]', reqId, 'sent');
 		return {
 			tab: 'magic',
 			success: true,
