@@ -85,8 +85,9 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 	const id = url.searchParams.get('id');
 	if (!id) return { comic: null };
 
-	const { data: userData } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
+	// Verified JWT claims; sub is the user id (drives the owner check below).
+	const { data: claimsData } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
 	if (!userId) return { comic: null };
 
 	const { data: comicRaw, error: comicErr } = await locals.supabase

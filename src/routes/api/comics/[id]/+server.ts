@@ -96,10 +96,10 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!comicId)
 		return new Response(JSON.stringify({ error: 'comic id required' }), { status: 400 });
 
-	// Ensure user and ownership
-	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
-	if (userErr || !userId)
+	// Ensure user and ownership (verified JWT claims; sub is the user id)
+	const { data: claimsData, error: claimsErr } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
+	if (claimsErr || !userId)
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
 
 	// Verify ownership

@@ -32,10 +32,12 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!Number.isInteger(number) || number < 1 || number > MAX_SHEETS)
 		return new Response(JSON.stringify({ error: 'Invalid sheet number' }), { status: 400 });
 
-	// Ensure user is owner
-	const { data: userData, error: userErr } = await locals.supabase.auth.getUser();
-	const userId = userData?.user?.id;
-	if (userErr || !userId)
+	// Ensure user is owner. Authorization is based on the request's verified
+	// JWT claims (getClaims validates the token; sub is the user id) rather
+	// than a getUser() lookup.
+	const { data: claimsData, error: claimsErr } = await locals.supabase.auth.getClaims();
+	const userId = claimsData?.claims?.sub;
+	if (claimsErr || !userId)
 		return new Response(JSON.stringify({ error: 'Authentication required' }), { status: 401 });
 
 	const { data: comicRow, error: comicErr } = await locals.supabase
@@ -62,21 +64,23 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 			status: 400
 		});
 
-	// Best-effort storage cleanup: remove exactly the files this sheet's images
-	// rows point at. The paths can't be rebuilt from the sheet number — after a
-	// renumber (below) a page's files stay under its original number prefix, so
-	// a prefix purge could hit another live page's uploads. Must run before the
-	// row delete, whose FK cascade removes the images rows we read here.
+	// Snapshot the storage paths this sheet's images rows point at. Must be
+	// read before the row delete, whose FK cascade removes the images rows —
+	// and the paths can't be rebuilt from the sheet number: after a renumber
+	// (below) a page's files stay under its original number prefix, so a
+	// prefix purge could hit another live page's uploads. The files themselves
+	// are only removed after the DB delete succeeds, so a failed delete never
+	// leaves rows pointing at already-deleted files.
 	const { data: imagesRaw, error: imagesErr } = await locals.supabase
 		.from('images')
 		.select('storage_path, bucket')
 		.eq('sheet_id', target.id);
+	const pathsByBucket = new Map<string, string[]>();
 	if (imagesErr) {
 		console.error('[delete_sheet]', reqId, 'images_select', {
 			...(dev ? { message: (imagesErr as { message?: string }).message } : {})
 		});
 	} else {
-		const pathsByBucket = new Map<string, string[]>();
 		for (const img of (imagesRaw ?? []) as Array<{
 			storage_path: string | null;
 			bucket: string | null;
@@ -85,22 +89,26 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 			const bucket = img.bucket || 'comics';
 			pathsByBucket.set(bucket, [...(pathsByBucket.get(bucket) ?? []), img.storage_path]);
 		}
-		for (const [bucket, paths] of pathsByBucket) {
-			const { error: rmErr } = await locals.supabase.storage.from(bucket).remove(paths);
-			if (rmErr) {
-				console.error('[delete_sheet]', reqId, 'storage_remove', {
-					bucket,
-					count: paths.length,
-					...(dev ? { message: (rmErr as { message?: string }).message } : {})
-				});
-			}
-		}
 	}
 
 	// Delete the sheet row; FK ON DELETE CASCADE removes its panels, bubbles
 	// and images rows.
 	const { error: delErr } = await locals.supabase.from('sheets').delete().eq('id', target.id);
 	if (delErr) return deleteErrorResponse(reqId, 'sheet_delete', delErr);
+
+	// Best-effort storage cleanup, now that the rows are gone. A failure here
+	// only orphans files in the bucket (logged, and cleanable by a follow-up
+	// job); it never fails the request.
+	for (const [bucket, paths] of pathsByBucket) {
+		const { error: rmErr } = await locals.supabase.storage.from(bucket).remove(paths);
+		if (rmErr) {
+			console.error('[delete_sheet]', reqId, 'storage_remove', {
+				bucket,
+				count: paths.length,
+				...(dev ? { message: (rmErr as { message?: string }).message } : {})
+			});
+		}
+	}
 
 	// Shift the later pages down one so numbers stay contiguous. Ascending
 	// order keeps the (comic_id, number) unique constraint satisfied at every
