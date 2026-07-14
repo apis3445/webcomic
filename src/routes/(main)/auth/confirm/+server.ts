@@ -44,13 +44,6 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	const inboundError = url.searchParams.get('error');
 	const inboundErrorDescription = url.searchParams.get('error_description');
 
-	console.log('[auth/confirm]', reqId, 'invoked', {
-		hasCode: !!code,
-		hasTokenHash: !!token_hash,
-		type,
-		inboundError
-	});
-
 	const redirectTo = new URL(url);
 	redirectTo.pathname = next;
 	redirectTo.searchParams.delete('code');
@@ -80,7 +73,6 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	if (code) {
 		const { error } = await supabase.auth.exchangeCodeForSession(code);
 		if (!error) {
-			console.log('[auth/confirm]', reqId, 'exchange_success');
 			redirect(303, redirectTo);
 		}
 		console.error('[auth/confirm]', reqId, 'exchange_error', {
@@ -98,7 +90,6 @@ export const GET: RequestHandler = async ({ url, locals: { supabase } }) => {
 	if (token_hash && type) {
 		const { error } = await supabase.auth.verifyOtp({ type, token_hash });
 		if (!error) {
-			console.log('[auth/confirm]', reqId, 'verify_success');
 			redirect(303, redirectTo);
 		}
 		console.error('[auth/confirm]', reqId, 'verify_error', {
