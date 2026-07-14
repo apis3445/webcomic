@@ -1,4 +1,3 @@
-import { dev } from '$app/environment';
 import { resolveSheetNumber } from '$lib/sheets';
 import type { RequestHandler } from './$types';
 /* eslint-disable @typescript-eslint/no-explicit-any */

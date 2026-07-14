@@ -2,18 +2,22 @@
 import { PUBLIC_SUPABASE_PUBLISHABLE_ID, PUBLIC_SUPABASE_URL } from '$env/static/public';
 import type { LayoutLoad } from './$types';
 import { createBrowserClient, createServerClient, isBrowser } from '@supabase/ssr';
+import { dev } from '$app/environment';
+import { injectAnalytics } from '@vercel/analytics/sveltekit';
+
+injectAnalytics({ mode: dev ? 'development' : 'production' });
 
 export const load: LayoutLoad = async ({ fetch, data, depends }) => {
 	depends('supabase:auth');
 
 	const supabase = isBrowser()
 		? createBrowserClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_ID, {
-			global: { fetch }
-		})
+				global: { fetch }
+			})
 		: createServerClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_PUBLISHABLE_ID, {
-			global: { fetch },
-			cookies: { getAll: () => [] }
-		});
+				global: { fetch },
+				cookies: { getAll: () => [] }
+			});
 
 	/**
 	 * `getClaims` validates the JWT signature locally (for asymmetric keys) once

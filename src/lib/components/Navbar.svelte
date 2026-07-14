@@ -494,5 +494,4 @@
 			max-width: 90px;
 		}
 	}
-
 </style>

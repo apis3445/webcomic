@@ -59,11 +59,7 @@
 		<aside class="sidebar">
 			<div class="sidebar-inner">
 				<div class="sidebar-avatar-wrap">
-					<Avatar
-						{supabase}
-						bind:url={avatarUrl}
-						onupload={() => profileForm.requestSubmit()}
-					/>
+					<Avatar {supabase} bind:url={avatarUrl} onupload={() => profileForm.requestSubmit()} />
 				</div>
 				<div class="sidebar-identity">
 					<h2 class="sidebar-name">{fullName || 'Your Name'}</h2>

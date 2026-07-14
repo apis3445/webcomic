@@ -8,7 +8,8 @@ function maskEmail(email: string | null | undefined): string {
 	if (at < 1) return '<invalid>';
 	const local = email.slice(0, at);
 	const domain = email.slice(at + 1);
-	const localMasked = local.length <= 2 ? `${local[0]}*` : `${local[0]}***${local[local.length - 1]}`;
+	const localMasked =
+		local.length <= 2 ? `${local[0]}*` : `${local[0]}***${local[local.length - 1]}`;
 	return `${localMasked}@${domain}`;
 }
 
@@ -34,7 +35,7 @@ export const actions: Actions = {
 			locals: { supabase }
 		} = event;
 		const reqId = newCorrelationId();
-		
+
 		const formData = await request.formData();
 		const email = (formData.get('email') ?? '').toString().trim();
 
