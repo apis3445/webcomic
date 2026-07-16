@@ -124,6 +124,9 @@ class ComicState {
 		// Resize to fit text when running in the browser
 		if (browser) {
 			this.resizeBubble(newBubble, panel.stageW);
+			// The fixed spawn point can fall outside a small panel; pull the
+			// bubble back inside so it never spawns out of reach.
+			this.clampBubbleToPanel(newBubble, panel.stageW, panel.stageH);
 		}
 
 		panel.bubbles = [...panel.bubbles, newBubble];
@@ -168,6 +171,9 @@ class ComicState {
 			// Resize to fit updated text when in browser
 			if (browser) {
 				this.resizeBubble(bubble, panel?.stageW ?? 0);
+				// A grown bubble near the panel edge could extend out of view;
+				// pull it back inside so it stays reachable.
+				if (panel) this.clampBubbleToPanel(bubble, panel.stageW, panel.stageH);
 			}
 			// Force Svelte Konva redraw by re-assigning bubbles array
 			if (this.activePanelIndex !== undefined) {
@@ -190,9 +196,22 @@ class ComicState {
 		if (!panel || panel.bubbles.length === 0) return;
 		for (const bubble of panel.bubbles) {
 			this.resizeBubble(bubble, panel.stageW);
+			// Rescue bubbles persisted outside the visible panel (dragged out
+			// before drags were bounded): clamp them back into reach.
+			this.clampBubbleToPanel(bubble, panel.stageW, panel.stageH);
 		}
 		// Re-assign so svelte-konva sees the change and redraws.
 		panel.bubbles = [...panel.bubbles];
+	}
+
+	// Keep a bubble's body inside its panel so it never ends up out of reach
+	// (the panel clips overflow at its edges). Drags are bounded live in
+	// Panel.svelte (dragBoundFunc); this handles the other paths — bubbles
+	// hydrated with out-of-bounds coordinates and text-driven resizes. If the
+	// bubble is larger than the panel, pin its top/left edge to 0.
+	private clampBubbleToPanel(bubble: Bubble, stageW: number, stageH: number) {
+		if (stageW > 0) bubble.x = Math.max(0, Math.min(bubble.x, stageW - bubble.width));
+		if (stageH > 0) bubble.y = Math.max(0, Math.min(bubble.y, stageH - bubble.height));
 	}
 
 	// Resize a bubble to fit its text content using an offscreen canvas measurement.
@@ -501,6 +520,27 @@ class ComicState {
 			};
 			attempt(/^https?:/i.test(url));
 		});
+	}
+
+	// Remove a panel's background image locally. Server-side deletion (images
+	// row + storage files) goes through DELETE /api/comics/[id]/panel-image;
+	// see Panel.svelte's removeImage.
+	clearPanelBg(index: number) {
+		const panel = this.panels[index];
+		if (!panel) return;
+		const previousUrl = panel.bgImageUrl;
+		panel.bgImage = undefined;
+		panel.bgImageUrl = '';
+		// Force reactive refresh so Konva drops the image node.
+		this.panels = [...this.panels];
+		// Session-long optimistic previews hold a blob: URL — release it.
+		if (browser && previousUrl.startsWith('blob:')) {
+			try {
+				URL.revokeObjectURL(previousUrl);
+			} catch {
+				/* ignore */
+			}
+		}
 	}
 
 	get hasContent(): boolean {

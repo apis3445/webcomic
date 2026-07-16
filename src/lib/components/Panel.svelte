@@ -3,7 +3,7 @@
 	import { Stage, Layer, Image, Group, Text, Circle, Line, Path } from 'svelte-konva';
 	import type { KonvaEventObject } from 'konva/lib/Node';
 	import type { Stage as KonvaStage } from 'konva/lib/Stage';
-	import { comicState } from '../comicState.svelte';
+	import { comicState, type Bubble } from '../comicState.svelte';
 	import { registerPanelStage } from '../panelStages';
 	// Server-backed upload flow: POST FormData to /api/upload-image and create comics via /api/comics
 	// (using event.locals.supabase on the server)
@@ -307,6 +307,42 @@
 		}
 	}
 
+	let removingImage = $state(false);
+
+	// Delete this panel's background image: remove the server row + storage
+	// files first, then clear local state. A panel whose image never reached
+	// the server (no comicId yet) has nothing remote — just clear locally.
+	async function removeImage(e: Event) {
+		e.stopPropagation();
+		if (removingImage) return;
+		removingImage = true;
+		dismissUploadError();
+		try {
+			const comicId = comicState.comicId;
+			if (comicId) {
+				const res = await fetch(`/api/comics/${comicId}/panel-image`, {
+					method: 'DELETE',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						sheetNumber: comicState.sheetNumber,
+						panelIndex: index + 1
+					})
+				});
+				if (!res.ok) {
+					const msg = await readErrorMessage(res, 'Could not remove the image. Please try again.');
+					showUploadError(msg);
+					return;
+				}
+			}
+			comicState.clearPanelBg(index);
+		} catch (err) {
+			console.error('removeImage error', err);
+			showUploadError('Network error while removing the image. Please try again.');
+		} finally {
+			removingImage = false;
+		}
+	}
+
 	function openFilePicker(e?: Event) {
 		e?.stopPropagation();
 		fileInput?.click();
@@ -328,6 +364,17 @@
 			offsetY: (height - bgImage.height * scale) / 2
 		};
 	});
+
+	// Keep the bubble body inside the stage while dragging. The panel clips
+	// overflow at its edges, so an unbounded drag can push a bubble fully out
+	// of view where it can't be grabbed back. If the bubble is larger than
+	// the panel, pin its top/left edge to 0 so it stays reachable.
+	function bubbleDragBound(pos: { x: number; y: number }, bubble: Bubble) {
+		return {
+			x: Math.max(0, Math.min(pos.x, width - bubble.width)),
+			y: Math.max(0, Math.min(pos.y, height - bubble.height))
+		};
+	}
 
 	function onBubbleDragMove(e: { target: { x(): number; y(): number } }, bubbleId: number) {
 		const activeBubble = panel.bubbles.find((b) => b.id === bubbleId);
@@ -541,6 +588,7 @@
 								x={bubble.x}
 								y={bubble.y}
 								draggable
+								dragBoundFunc={(pos) => bubbleDragBound(pos, bubble)}
 								ondragmove={(e) => onBubbleDragMove(e, bubble.id)}
 								onclick={(e) => onBubbleClick(e, bubble.id)}
 							>
@@ -631,6 +679,19 @@
 					</Layer>
 				</Stage>
 			</div>
+
+			{#if bgImage && !uploading}
+				<button
+					type="button"
+					class="remove-image-button"
+					onclick={removeImage}
+					disabled={removingImage}
+					title="Remove image"
+					aria-label="Remove panel {index + 1} image"
+				>
+					{removingImage ? '…' : '🗑'}
+				</button>
+			{/if}
 
 			{#if uploading}
 				<div class="uploading-overlay" aria-hidden="true">
@@ -768,6 +829,36 @@
 	}
 
 	.upload-button:focus {
+		outline: 2px solid #fff;
+		outline-offset: 2px;
+	}
+
+	/* Remove-image button, only rendered when the panel has an image */
+	.remove-image-button {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		z-index: 3;
+		background: rgba(0, 0, 0, 0.6);
+		color: #fff;
+		border: none;
+		padding: 6px 10px;
+		border-radius: 6px;
+		font-size: 14px;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.remove-image-button:hover {
+		background: rgba(220, 38, 38, 0.85);
+	}
+
+	.remove-image-button:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.remove-image-button:focus {
 		outline: 2px solid #fff;
 		outline-offset: 2px;
 	}
