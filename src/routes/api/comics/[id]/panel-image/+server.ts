@@ -23,6 +23,11 @@ function deleteErrorResponse(reqId: string, stage: string, error: unknown, statu
 	);
 }
 
+// Supabase's storage.remove() caps the array it accepts per call, so paths are
+// deleted in chunks of this size (same constant as the comic delete endpoint).
+// Any per-chunk failure is logged and skipped — cleanup stays best-effort.
+const STORAGE_REMOVE_BATCH = 1000;
+
 // Removes the background image of one panel: deletes the images row(s) and
 // their storage objects (private original + published copy). The panel row
 // itself is kept — bubbles attach to it.
@@ -125,13 +130,17 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		}
 	}
 	for (const [bucket, paths] of pathsByBucket) {
-		const { error: rmErr } = await locals.supabase.storage.from(bucket).remove(paths);
-		if (rmErr) {
-			console.error('[delete_panel_image]', reqId, 'storage_remove', {
-				bucket,
-				count: paths.length,
-				...(dev ? { message: (rmErr as { message?: string }).message } : {})
-			});
+		for (let i = 0; i < paths.length; i += STORAGE_REMOVE_BATCH) {
+			const chunk = paths.slice(i, i + STORAGE_REMOVE_BATCH);
+			const { error: rmErr } = await locals.supabase.storage.from(bucket).remove(chunk);
+			if (rmErr) {
+				console.error('[delete_panel_image]', reqId, 'storage_remove', {
+					bucket,
+					batch_offset: i,
+					batch_size: chunk.length,
+					...(dev ? { message: (rmErr as { message?: string }).message } : {})
+				});
+			}
 		}
 	}
 

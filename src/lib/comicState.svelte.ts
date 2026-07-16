@@ -124,6 +124,9 @@ class ComicState {
 		// Resize to fit text when running in the browser
 		if (browser) {
 			this.resizeBubble(newBubble, panel.stageW);
+			// The fixed spawn point can fall outside a small panel; pull the
+			// bubble back inside so it never spawns out of reach.
+			this.clampBubbleToPanel(newBubble, panel.stageW, panel.stageH);
 		}
 
 		panel.bubbles = [...panel.bubbles, newBubble];
